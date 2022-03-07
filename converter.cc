@@ -7,6 +7,10 @@
 #include <vector>
 #include <memory>
 #include <cassert>
+#include <sys/stat.h>
+#include <wait.h>
+#include <fcntl.h>
+#include "err.h"
 
 constexpr char const* elf_file_name = "/home/xps15/Studia/Sem6/ZSO/Laby/Zad1_ELF_converter/tests/no_x64.o";
 constexpr char const* elf_copy_name = "/home/xps15/Studia/Sem6/ZSO/Laby/Zad1_ELF_converter/tests/no_i386_copy.o";
@@ -17,6 +21,96 @@ public:
 };
 
 namespace converter {
+
+    namespace assembly {
+        static char const* FIFO_PREFIX = "fifo_";
+
+        class FIFO {
+            std::string fifo_name{FIFO_PREFIX};
+        public:
+            explicit FIFO() {
+                for (size_t i = 0;; ++i) {
+                    fifo_name.append(std::to_string(i));
+                    if (mkfifo(fifo_name.c_str(), 0755) == -1) {
+                        if (errno == EEXIST) {
+                            fifo_name = FIFO_PREFIX;
+                            continue;
+                        } else {
+                            syserr("Error in mkfifo()");
+                        }
+                    }
+                    return;
+                }
+            }
+
+            ~FIFO() {
+                unlink(fifo_name.c_str());
+            }
+
+            std::string const& name() {
+                return fifo_name;
+            }
+        };
+
+        std::string assemble(std::string const& asm_code) {
+            static char const* AS = "as";
+            static char const* OBJCOPY = "objcopy";
+
+            // open fifo for as -> objcopy communication
+            FIFO as_to_objcopy;
+            // open fifo for objcopy -> us communication
+            FIFO objcopy_to_us;
+
+            int us_to_as[2];
+            if (pipe(us_to_as) != 0) {
+                std::cerr << "Error in pipe().\n";
+            }
+
+            // fork AS process
+            switch (fork()) {
+                case 0: // child
+                    if (close(0) == -1)
+                        syserr("Error in child, close(0)");
+                    if (dup(us_to_as[0]) != 0)
+                        syserr("Error in child, dup(us_to_as[0])");
+                    if (close (us_to_as[0]) == -1)
+                        syserr("Error in child, close(us_to_as[0])");
+                    if (close (us_to_as[1]) == -1)
+                        syserr("Error in child, close (us_to_us[1])");
+
+                    execlp(AS, AS, "-o", as_to_objcopy.name().c_str(), "-", nullptr);
+                    syserr("exec() failed");
+                default: // parent
+                    break;
+            }
+
+            // fork OBJCOPY process
+            switch (fork()) {
+                case 0: // child
+                    execlp(OBJCOPY, OBJCOPY, "-j", ".text", "-O", "binary", as_to_objcopy.name().c_str(), objcopy_to_us.name().c_str(), nullptr);
+                    syserr("exec() failed");
+                default: // parent
+                    break;
+            }
+
+            if (write(us_to_as[1], asm_code.c_str(), asm_code.length()) == -1) {
+                syserr("Error in write()");
+            }
+            if (close(us_to_as[1]) == -1)
+                syserr("Error in parent, us_to_as(1)");
+
+            std::ifstream rx{objcopy_to_us.name(), std::ios_base::binary | std::ios_base::in};
+            std::istreambuf_iterator<char> eos;
+            std::string machine_code(std::istreambuf_iterator<char>(rx), eos);
+
+            if (wait(nullptr) == -1)
+                syserr("Error in wait");
+            if (wait(nullptr) == -1)
+                syserr("Error in wait");
+
+            return machine_code;
+        }
+    }
 
     namespace elf64 {
 #define read_to_field(elf_stream, field) elf_stream.read(reinterpret_cast<char*>(&field), sizeof(field))
@@ -70,7 +164,30 @@ namespace converter {
             }
         };
 
-        struct Section64 {
+        struct Symbol64 : Elf64_Sym {
+            explicit Symbol64(std::ifstream &elf_stream) : Elf64_Sym{} {
+                read_to_field(elf_stream, st_name);
+                read_to_field(elf_stream, st_info);
+                read_to_field(elf_stream, st_other);
+                read_to_field(elf_stream, st_shndx);
+                read_to_field(elf_stream, st_value);
+                read_to_field(elf_stream, st_size);
+
+                // TODO: should we consider SYMINFO additional table?
+            }
+        };
+
+        struct Rela64 : Elf64_Rela {
+            explicit Rela64(std::ifstream &elf_stream) : Elf64_Rela{} {
+                read_to_field(elf_stream, r_offset);
+                read_to_field(elf_stream, r_info);
+                read_to_field(elf_stream, r_addend);
+            }
+        };
+
+
+        struct Section64 { // TODO: class hierarchy to avoid ugly std::optionals
+                           // honestly, a mix of inheritance and Rust enums would fit the best.
             Elf64_Shdr header{};
             std::optional<std::unique_ptr<char[]>> data;
 
@@ -105,11 +222,11 @@ namespace converter {
                     case SHT_STRTAB:
                         type = "SHT_STRTAB";
                         break;
-                    case SHT_RELA:
-                        type = "SHT_RELA";
-                        break;
                     case SHT_DYNAMIC:
                         type = "SHT_DYNAMIC";
+                        break;
+                    case SHT_RELA:
+                        type = "SHT_RELA";
                         break;
                     case SHT_REL:
                         type = "SHT_REL";
@@ -129,27 +246,6 @@ namespace converter {
 
             [[nodiscard]] char const *name(Section64 const &str_table) const {
                 return &str_table.data.value().get()[header.sh_name];
-            }
-        };
-
-        struct Symbol64 : Elf64_Sym {
-            explicit Symbol64(std::ifstream &elf_stream) : Elf64_Sym{} {
-                read_to_field(elf_stream, st_name);
-                read_to_field(elf_stream, st_info);
-                read_to_field(elf_stream, st_other);
-                read_to_field(elf_stream, st_shndx);
-                read_to_field(elf_stream, st_value);
-                read_to_field(elf_stream, st_size);
-
-                // TODO: should we consider SYMINFO additional table?
-            }
-        };
-
-        struct Rela64 : Elf64_Rela {
-            explicit Rela64(std::ifstream &elf_stream) : Elf64_Rela{} {
-                read_to_field(elf_stream, r_offset);
-                read_to_field(elf_stream, r_info);
-                read_to_field(elf_stream, r_addend);
             }
         };
 
@@ -192,14 +288,30 @@ namespace converter {
         };
 
         struct Rel32 : Elf32_Rel{
-            explicit Rel32(elf64::Rela64 const& rela_64) : Elf32_Rel{} {
+            explicit Rel32(elf64::Rela64 const& rela64) : Elf32_Rel{} {
                 // TODO
+            }
+        };
+
+        struct Symbol32 : Elf32_Sym {
+            explicit Symbol32(elf64::Symbol64 const& symbol64) : Elf32_Sym{} {
+                // TODO
+            }
+        };
+
+        struct Section32 { // TODO: class hierarchy to avoid ugly std::optionals
+            // honestly, a mix of inheritance and Rust enums would fit best.
+            Elf32_Shdr header{};
+            std::optional<std::unique_ptr<char[]>> data;
+
+            explicit Section32(elf64::Section64 const &section64, Elf32_Ehdr const &elf_header) {
+                header.sh_name = section64.header.sh_name;
             }
         };
     }
 }
 
-int main() {
+int main2() {
     std::ifstream elf_stream;
     elf_stream.exceptions(/*std::ifstream::eofbit | *//*std::ifstream::failbit | */std::ifstream::badbit);
     elf_stream.open(elf_file_name, std::ifstream::in | std::ifstream::binary);
@@ -227,4 +339,10 @@ int main() {
     elf_copy_stream.close();
 
     return retcode;
+}
+
+int main() {
+    std::ofstream ret{"ret.test"};
+    auto machine_code{converter::assembly::assemble(R"(mov %eax, %eax)")};
+    ret.write(machine_code.c_str(), static_cast<ssize_t>(machine_code.length()));
 }

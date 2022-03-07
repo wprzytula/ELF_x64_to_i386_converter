@@ -3,4 +3,7 @@ project(Zad1_ELF_converter)
 
 set(CMAKE_CXX_STANDARD 20)
 
-add_executable(Zad1_ELF_converter converter.cc)
+add_executable(converter
+        err.cc
+        converter.cc
+        )
