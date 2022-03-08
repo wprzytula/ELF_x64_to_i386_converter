@@ -8,6 +8,7 @@
 #include <memory>
 #include <cassert>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <wait.h>
 #include <fcntl.h>
 #include "err.h"
@@ -23,32 +24,44 @@ public:
 namespace converter {
 
     namespace assembly {
-        static char const* FIFO_PREFIX = "fifo_";
+        static char const* LOCK_PREFIX = "lock_";
+        static char const* CODE_PREFIX = "code_";
 
-        class FIFO {
-            std::string fifo_name{FIFO_PREFIX};
+        class Tempfile {
+            std::string lock_name{LOCK_PREFIX};
+            size_t _file_num;
         public:
-            explicit FIFO() {
+            explicit Tempfile() {
                 for (size_t i = 0;; ++i) {
-                    fifo_name.append(std::to_string(i));
-                    if (mkfifo(fifo_name.c_str(), 0755) == -1) {
+                    lock_name.append(std::to_string(i));
+//                    if (access(lock_name.c_str(), F_OK) == 0) { // file already exists
+//                        lock_name = LOCK_PREFIX;
+//                        continue;
+//                    }
+                    int filedes;
+                    filedes = open(lock_name.c_str(), O_WRONLY | O_CREAT | O_EXCL);
+                    if (filedes == -1) {
                         if (errno == EEXIST) {
-                            fifo_name = FIFO_PREFIX;
+                            lock_name = LOCK_PREFIX;
                             continue;
                         } else {
-                            syserr("Error in mkfifo()");
+                            syserr("Error in open()");
                         }
                     }
+                    close(filedes);
+                    _file_num = i;
                     return;
                 }
             }
 
-            ~FIFO() {
-                unlink(fifo_name.c_str());
+            ~Tempfile() {
+                if (unlink(lock_name.c_str()) == -1) {
+                    syserr("unlink");
+                }
             }
 
-            std::string const& name() {
-                return fifo_name;
+            [[nodiscard]] size_t file_num() const {
+                return _file_num;
             }
         };
 
@@ -56,10 +69,10 @@ namespace converter {
             static char const* AS = "as";
             static char const* OBJCOPY = "objcopy";
 
-            // open fifo for as -> objcopy communication
-            FIFO as_to_objcopy;
-            // open fifo for objcopy -> us communication
-            FIFO objcopy_to_us;
+            // create tempfile for as -> objcopy -> converter communication
+            Tempfile const codefile_lock;
+
+            std::string const codefile{CODE_PREFIX + std::to_string(codefile_lock.file_num())};
 
             int us_to_as[2];
             if (pipe(us_to_as) != 0) {
@@ -73,40 +86,47 @@ namespace converter {
                         syserr("Error in child, close(0)");
                     if (dup(us_to_as[0]) != 0)
                         syserr("Error in child, dup(us_to_as[0])");
-                    if (close (us_to_as[0]) == -1)
+                    if (close(us_to_as[0]) == -1)
                         syserr("Error in child, close(us_to_as[0])");
-                    if (close (us_to_as[1]) == -1)
+                    if (close(us_to_as[1]) == -1)
                         syserr("Error in child, close (us_to_us[1])");
 
-                    execlp(AS, AS, "-o", as_to_objcopy.name().c_str(), "-", nullptr);
+                    execlp(AS, AS, "-o", codefile.c_str(), "-", nullptr);
                     syserr("exec() failed");
                 default: // parent
-                    break;
-            }
-
-            // fork OBJCOPY process
-            switch (fork()) {
-                case 0: // child
-                    execlp(OBJCOPY, OBJCOPY, "-j", ".text", "-O", "binary", as_to_objcopy.name().c_str(), objcopy_to_us.name().c_str(), nullptr);
-                    syserr("exec() failed");
-                default: // parent
-                    break;
+                    if (close(us_to_as[0]) == -1)
+                        syserr("Error in parent, close(us_to_as[0])");
             }
 
             if (write(us_to_as[1], asm_code.c_str(), asm_code.length()) == -1) {
                 syserr("Error in write()");
             }
+
             if (close(us_to_as[1]) == -1)
                 syserr("Error in parent, us_to_as(1)");
 
-            std::ifstream rx{objcopy_to_us.name(), std::ios_base::binary | std::ios_base::in};
-            std::istreambuf_iterator<char> eos;
-            std::string machine_code(std::istreambuf_iterator<char>(rx), eos);
+            if (wait(nullptr) == -1)
+                syserr("Error in wait");
+
+            // fork OBJCOPY process
+            switch (fork()) {
+                case 0: // child
+                    execlp(OBJCOPY, OBJCOPY, "-j", ".text", "-O", "binary", codefile.c_str()/*, codefile_lock.name().c_str()*/, nullptr);
+                    syserr("exec() failed");
+                default: // parent
+                    break;
+            }
 
             if (wait(nullptr) == -1)
                 syserr("Error in wait");
-            if (wait(nullptr) == -1)
-                syserr("Error in wait");
+
+            std::ifstream rx{codefile.c_str(), std::ios_base::binary | std::ios_base::in};
+            std::istreambuf_iterator<char> eos;
+            std::string machine_code(std::istreambuf_iterator<char>(rx), eos);
+
+            if (unlink(codefile.c_str()) == -1) {
+                syserr("unlink");
+            }
 
             return machine_code;
         }
@@ -342,7 +362,9 @@ int main2() {
 }
 
 int main() {
-    std::ofstream ret{"ret.test"};
-    auto machine_code{converter::assembly::assemble(R"(mov %eax, %eax)")};
+    std::ofstream ret{"ret.test", std::ios_base::app | std::ios_base::binary};
+    auto machine_code{converter::assembly::assemble(R"(
+mov %eax, %eax
+)")};
     ret.write(machine_code.c_str(), static_cast<ssize_t>(machine_code.length()));
 }
