@@ -6,4 +6,4 @@ set(CMAKE_CXX_STANDARD 20)
 add_executable(converter
         err.cc
         converter.cc
-        )
+        assemblage.cc assemblage.h converter.h)
