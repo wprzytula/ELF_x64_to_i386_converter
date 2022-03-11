@@ -13,7 +13,7 @@ namespace converter {
         struct Symbol64;
         struct Section64;
         struct Section64WithoutData;
-        struct Section64WithData;
+        struct Section64WithGenericData;
         struct Section64Strtab;
         struct Section64Symtab;
     }
@@ -76,15 +76,15 @@ namespace converter {
             Section64WithoutData(Section64WithoutData&&) = default;
         };
 
-        struct Section64WithData : public Section64 {
-            explicit Section64WithData(Section64 section64, std::ifstream& elf_stream)
+        struct Section64WithGenericData : public Section64 {
+            explicit Section64WithGenericData(Section64 section64, std::ifstream& elf_stream)
                     : Section64{std::move(section64)}, data{std::make_unique<char[]>(header.sh_size)} {
                 elf_stream.seekg(static_cast<ssize_t>(header.sh_offset));
                 elf_stream.read(data.get(), static_cast<ssize_t>(header.sh_size));
             }
 
-            ~Section64WithData() override = default;
-            Section64WithData(Section64WithData&&) = default;
+            ~Section64WithGenericData() override = default;
+            Section64WithGenericData(Section64WithGenericData&&) = default;
 
             std::unique_ptr<char[]> data;
 
@@ -94,8 +94,8 @@ namespace converter {
 
         };
 
-        struct Section64Strtab final : public Section64WithData {
-            explicit Section64Strtab(Section64WithData section64_with_data) : Section64WithData(std::move(section64_with_data)) {}
+        struct Section64Strtab final : public Section64WithGenericData {
+            explicit Section64Strtab(Section64WithGenericData section64_with_data) : Section64WithGenericData(std::move(section64_with_data)) {}
             ~Section64Strtab() final = default;
             Section64Strtab(Section64Strtab&&) = default;
 
@@ -104,8 +104,10 @@ namespace converter {
             }
         };
 
-        struct Section64Symtab final : public Section64WithData {
-            explicit Section64Symtab(Section64WithData section64_with_data) : Section64WithData(std::move(section64_with_data)) {}
+        struct Section64Symtab final : public Section64 {
+            std::vector<Symbol64> symbols;
+
+            explicit Section64Symtab(Section64 section64, std::ifstream& elf_stream);
             ~Section64Symtab() final = default;
             Section64Symtab(Section64Symtab&&) = default;
         };

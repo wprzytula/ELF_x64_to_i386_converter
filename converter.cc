@@ -57,7 +57,7 @@ namespace converter {
     }
 
     namespace elf64 {
-#define read_to_field(elf_stream, field) elf_stream.read(reinterpret_cast<char*>(&field), sizeof(field))
+#define read_to_field(elf_stream, field) elf_stream.read(reinterpret_cast<char*>(&(field)), sizeof(field))
 
         Header64::Header64(std::ifstream &elf_stream) : Elf64_Ehdr{} {
             read_to_field(elf_stream, e_ident);
@@ -137,7 +137,7 @@ namespace converter {
             read_to_field(elf_stream, header.sh_addralign);
             read_to_field(elf_stream, header.sh_entsize);
 
-            char const *type = "other";
+            /*char const *type = "other";
             switch (header.sh_type) {
                 case SHT_NULL:
                     type = "NULL";
@@ -166,11 +166,18 @@ namespace converter {
                 default:
                     break;
             }
-            std::cout << "Section type: " << type << '\n';
+            std::cout << "Section type: " << type << '\n';*/
         }
 
         [[nodiscard]] char const* Section64::name(Section64Strtab const &str_table) const {
             return str_table.name_of(header.sh_name);
+        }
+
+        Section64Symtab::Section64Symtab(Section64 section64, std::ifstream& elf_stream) : Section64(std::move(section64)) {
+            elf_stream.seekg(static_cast<ssize_t>(header.sh_offset));
+            for (size_t i = 0; i < header.sh_size; i += sizeof(Elf64_Sym)) {
+                symbols.emplace_back(elf_stream);
+            }
         }
 
         std::unique_ptr<Section64> Section64::parse_section(std::ifstream& elf_stream, Elf64_Ehdr const& elf_header) {
@@ -178,9 +185,8 @@ namespace converter {
 
             if (header_phase.header.sh_size) {
                 std::cout << "Data found in section, at " << header_phase.header.sh_offset << '\n';
-                Section64WithData data_phase{std::move(header_phase), elf_stream};
                 char const* type = "other";
-                switch (data_phase.header.sh_type) {
+                switch (header_phase.header.sh_type) {
                     case SHT_NULL:
                         type = "NULL";
                         break;
@@ -192,10 +198,12 @@ namespace converter {
                         break;
                     case SHT_SYMTAB:
                         type = "SHT_SYMTAB";
-                        return std::make_unique<Section64Symtab>(std::move(data_phase));
+                        std::cout << "Section type: " << type << '\n';
+                        return std::make_unique<Section64Symtab>(std::move(header_phase), elf_stream);
                     case SHT_STRTAB:
                         type = "SHT_STRTAB";
-                        return std::make_unique<Section64Strtab>(std::move(data_phase));
+                        std::cout << "Section type: " << type << '\n';
+                        return std::make_unique<Section64Strtab>(Section64WithGenericData{std::move(header_phase), elf_stream});
                     case SHT_DYNAMIC:
                         type = "SHT_DYNAMIC";
                         break;
@@ -210,7 +218,7 @@ namespace converter {
                 }
                 std::cout << "Section type: " << type << '\n';
 
-                return std::make_unique<Section64WithData>(std::move(data_phase));
+                return std::make_unique<Section64WithGenericData>(Section64WithGenericData{std::move(header_phase), elf_stream});
             } else {
                 return std::make_unique<Section64WithoutData>(Section64WithoutData{std::move(header_phase)});
             }
@@ -223,10 +231,32 @@ namespace converter {
                 sections.push_back(Section64::parse_section(elf_stream, header));
             }
 
-            for (std::unique_ptr<Section64> const& section: sections) {
+            // print section names
+            {
                 auto* cast = dynamic_cast<Section64Strtab*>(sections[header.e_shstrndx].get());
                 assert(cast != nullptr);
-                std::cout << section->name(*cast) << '\n';
+                for (std::unique_ptr<Section64> const& section: sections) {
+                    std::cout << section->name(*cast) << '\n';
+                }
+            }
+
+            Section64Strtab const* symstrtab = [&](){
+                for (auto const& section: sections) {
+                    auto* cast = dynamic_cast<Section64Strtab*>(section.get());
+                    if (cast != nullptr && cast->header.sh_offset != sections[header.e_shstrndx]->header.sh_offset)
+                        return cast;
+                }
+            }();
+
+            // print symbol names
+            for (std::unique_ptr<Section64> const& section: sections) {
+                auto* cast = dynamic_cast<Section64Symtab*>(section.get());
+                if (cast != nullptr) {
+                    // found SYMTAB
+                    for (auto const& symbol: cast->symbols) {
+                        std::cout << symstrtab->name_of(symbol.st_name) << '\n';
+                    }
+                }
             }
         }
     }
@@ -237,8 +267,8 @@ int main() {
     elf_stream.exceptions(/*std::ifstream::eofbit | *//*std::ifstream::failbit | */std::ifstream::badbit);
     elf_stream.open(elf_file_name, std::ifstream::in | std::ifstream::binary);
 
-    std::ofstream elf_copy_stream;
-    elf_copy_stream.open(elf_copy_name, std::ofstream::out | std::ofstream::binary);
+//    std::ofstream elf_copy_stream;
+//    elf_copy_stream.open(elf_copy_name, std::ofstream::out | std::ofstream::binary);
 
 //    std::copy(std::istreambuf_iterator<char>(elf_stream), std::istreambuf_iterator<char>(),
 //              std::ostreambuf_iterator<char>(elf_copy_stream));
@@ -257,7 +287,7 @@ int main() {
     }
 
     elf_stream.close();
-    elf_copy_stream.close();
+//    elf_copy_stream.close();
 
     return retcode;
 }
