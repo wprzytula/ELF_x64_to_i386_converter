@@ -16,7 +16,7 @@
 constexpr char const* elf_file_name = "/home/xps15/Studia/Sem6/ZSO/Laby/Zad1_ELF_converter/tests/no_x64.o";
 constexpr char const* elf_copy_name = "/home/xps15/Studia/Sem6/ZSO/Laby/Zad1_ELF_converter/tests/no_i386_copy.o";
 
-constexpr char const*  func_file_name = "/home/xps15/Studia/Sem6/ZSO/Laby/Zad1_ELF_converter/tests/example/test.flist";
+constexpr char const* func_file_name = "/home/xps15/Studia/Sem6/ZSO/Laby/Zad1_ELF_converter/tests/example/test.flist";
 
 namespace converter {
     class NonsupportedFileContent : public std::invalid_argument {
@@ -391,7 +391,16 @@ int main4() {
     return 0;
 }
 
-int main() {
+int main(int argc, char const* argv[]) {
+/*    if (argc != 4) {
+        std::cerr << "Wrong number of arguments.\n";
+        return 1;
+    }
+
+    char const* elf64_file_name = argv[1];
+    char const* functions_file_name = argv[2];
+    char const* elf32_file_name = argv[3];*/
+
     std::ifstream func_stream;
     func_stream.exceptions(/*std::ifstream::eofbit | *//*std::ifstream::failbit | */std::ifstream::badbit);
     func_stream.open(func_file_name, std::ifstream::in);
@@ -412,7 +421,7 @@ int main() {
         std::cout << "\n\n#############################\n\n";
 
         converter::elf64::Elf64 elf64{elf_stream};
-        
+
     } catch (std::ifstream::failure const&) {
         std::cerr << "Error when processing file: read error or unexpected EOF.\n";
         return 1;
