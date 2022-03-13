@@ -4,9 +4,109 @@
 #include <elf.h>
 #include <fstream>
 #include <memory>
+#include <utility>
 #include <vector>
+#include <set>
 
 namespace converter {
+    namespace functions {
+
+        enum struct ArgType {
+            int_t,
+            uint_t,
+            long_t,
+            ulong_t,
+            longlong_t,
+            ulonglong_t,
+            ptr_t,
+        };
+
+        struct Arg {
+            using enum ArgType;
+            ArgType type;
+
+            static ArgType parse_arg_type(char const* argtype);
+
+            Arg(const std::string& argtype) : type{parse_arg_type(argtype.c_str())} {}
+
+            [[nodiscard]] bool is_signed() const {
+                return type == int_t || type == long_t || type == longlong_t;
+            }
+
+            [[nodiscard]] size_t bits_32() const;
+
+            [[nodiscard]] size_t bits_64() const;
+        };
+
+        struct Ret {
+            std::optional<ArgType> const ret;
+
+            static std::optional<ArgType> parse_ret_type(char const* argtype);
+
+            explicit Ret(char const* argtype) : ret{parse_ret_type(argtype)} {}
+        };
+
+        struct Function {
+            std::string const name;
+            Ret const ret;
+            std::vector<Arg> const args;
+
+            explicit Function(std::string name, Ret ret, std::vector<Arg> args) : name{std::move(name)}, ret{std::move(ret)}, args{std::move(args)} {}
+            static Function from_line_decl(std::string& decl);
+
+            struct order {
+                using is_transparent = void;
+                bool operator()(Function const& x, Function const& y) const {
+                    return x.name < y.name;
+                }
+
+                bool operator()(std::string const& x, Function const& y) const {
+                    return x < y.name;
+                }
+
+                bool operator()(Function const& x, std::string const& y) const {
+                    return x.name < y;
+                }
+            };
+        };
+
+        struct Functions {
+            std::set<Function, Function::order> functions;
+
+            explicit Functions(std::ifstream& func_stream);
+
+            decltype(functions.find("")) find(std::string const& name) {
+                return functions.find(name);
+            }
+
+//          debug only
+            void print() {
+                for (auto const& function : functions) {
+                    printf("Function: ret=%d, name=%s, args:",
+                           function.ret.ret.has_value() ? static_cast<int>(function.ret.ret.value()) : -1,
+                           function.name.c_str()
+                    );
+                    for (auto const& arg: function.args) {
+                        printf(" %d", static_cast<int>(arg.type));
+                    }
+                    putchar('\n');
+                }
+            }
+
+            void print_one(std::string const& name) {
+                auto const& function = *functions.find(name);
+                printf("Function: ret=%d, name=%s, args:",
+                       function.ret.ret.has_value() ? static_cast<int>(function.ret.ret.value()) : -1,
+                       function.name.c_str()
+                );
+                for (auto const& arg: function.args) {
+                    printf(" %d", static_cast<int>(arg.type));
+                }
+                putchar('\n');
+            }
+        };
+    }
+
     namespace elf64 {
         struct Header64;
         struct Rela64;
@@ -16,6 +116,7 @@ namespace converter {
         struct Section64WithGenericData;
         struct Section64Strtab;
         struct Section64Symtab;
+        struct Section64Rela;
     }
 
     namespace elf32 {
@@ -45,6 +146,7 @@ namespace converter {
         };
 
         struct Symbol64 : Elf64_Sym {
+            bool special_section;
             explicit Symbol64(std::ifstream &elf_stream);
         };
 
@@ -90,10 +192,6 @@ namespace converter {
 
         };
 
-        struct Section64Rela : public Section64 {
-
-        };
-
         struct Section64Strtab final : public Section64WithGenericData {
             explicit Section64Strtab(Section64WithGenericData section64_with_data) : Section64WithGenericData(std::move(section64_with_data)) {}
             ~Section64Strtab() final = default;
@@ -102,6 +200,14 @@ namespace converter {
             [[nodiscard]] char const* name_of(Elf64_Word i) const {
                 return &data.get()[i];
             }
+        };
+
+        struct Section64Rela final : public Section64 {
+            std::vector<Rela64> relocations;
+
+            explicit Section64Rela(Section64 section64, std::ifstream& elf_stream);
+            ~Section64Rela() final = default;
+            Section64Rela(Section64Rela&&) = default;
         };
 
         struct Section64Symtab final : public Section64 {
