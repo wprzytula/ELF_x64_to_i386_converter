@@ -1,0 +1,36 @@
+Problems and TODOs:
+
+1. Problem: how to transform Elf32 into flat binary file? (order of insertion, updating references)
+    - no program headers
+    - we can first load file into Elf64 struct, then convert it to Elf32 (stubs, relocations, symbols),
+      then correct file offsets and finally linearize it to file.
+
+2. Problem: how to transform .text? What assumptions are there about its architecture before and after?
+    - based on the example, there is a great difference between them... many instructions are different!
+    - explanation of the above: machine code is the same, just objdump interprets it another way in 32-bit mode.
+      This means we only need to perform relocation conversion.
+
+3. Relocation conversion:
+    - just take RELA entry, rewrite it into REL, add addend to address in code, and voila!
+
+4. eh_frame
+    - probably just an ordinary relocation/symbol translation, as in .text (no special treatment necessary)
+
+5. Stubs:
+    - 1st case: calling our (64-bit) functions from outside (32-bit):
+        - changing original symbols from GLOBAL to LOCAL
+        - adding new global symbols: trampolines that change mode from 32-bit to 64-bit,
+          call original function and change mode back to 32-bit
+        - adding new relocations that point from stubs to original symbols (e.g. thunk -> f)
+    - 2nd case: calling external functions (32-bit O̶R̶ ̶6̶4̶-̶b̶i̶t̶ [crossed out because of 3.3 point of task content])
+      from our (64-bit) code:
+        - adding new local symbols: stubs that change mode to 32-bit, call global symbols and come back to 64-bit
+        - changing relocations in the way that now they point to new symbols (stubs)
+          instead of original external functions (e.g. [!-> fputs] => [-> thunk_fputs])
+    - 3rd case: calling our functions from our functions (both 64-bit):
+        - no stubs needed
+
+6. Functions in file:
+    - there are both 32-bit and 64-bit functions defined there:
+        - if a function name is an internal symbol (defined one), then we consider it as 64-bit -> 1st and 3rd case
+        - else (function name is an external symbol - UNDEF), then we consider it as 32-bit     -> 2nd case
