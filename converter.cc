@@ -21,7 +21,7 @@ constexpr char const* func_file_name = "/home/xps15/Studia/Sem6/ZSO/Laby/Zad1_EL
 namespace converter {
     class NonsupportedFileContent : public std::invalid_argument {
     public:
-        explicit NonsupportedFileContent(char const* what) : std::invalid_argument(what) {}
+        explicit NonsupportedFileContent(std::string const& what) : std::invalid_argument(what) {}
     };
 
     uint32_t truncate_addr(uint64_t addr) {
@@ -393,23 +393,45 @@ namespace converter {
         }
 
         Rel32::Rel32(elf64::Rela64 const& rela64) : Elf32_Rel{} {
-            // TODO
+            r_offset = truncate_addr(rela64.r_offset);
+            
+            Elf32_Word const r_sym = ELF64_R_SYM(rela64.r_info);
+            Elf32_Word const r_type = [&r_info=rela64.r_info](){
+                Elf32_Xword const r64_type = ELF64_R_TYPE(r_info);
+                switch (r64_type) {
+                    case R_X86_64_32:
+                    case R_X86_64_32S:
+                        return R_386_32;
+                    case R_X86_64_PC32:
+                    case R_X86_64_PLT32:
+                        return R_386_PC32;
+                    default:
+                        throw NonsupportedFileContent{"Unsupported relocation type: " + std::to_string(r64_type)};
+                }
+            }();
+            printf("\nConverted symbol type=%u, sym=%u into type=%lu, sym=%u\n", r_type, r_sym, ELF64_R_TYPE(rela64.r_info), r_sym);
+            r_info = ELF32_R_INFO(r_sym, r_type);
+
+            // TODO: addend correction
         }
 
         void Rel32::write_out(std::ofstream& elf_file, size_t& offset) const {
             static_assert(sizeof(*this) == sizeof(Elf32_Rel));
             write_from_field(elf_file, *this);
-//            offset += sizeof(*this);
         }
 
         Symbol32::Symbol32(elf64::Symbol64 const& symbol64) : Elf32_Sym{} {
-            // TODO
+            st_name = symbol64.st_name;
+            st_value = symbol64.st_value;
+            st_size = symbol64.st_size; // FIXME: surely?
+            st_info = symbol64.st_info;  // TODO: to be modified elsewhere
+            st_other = symbol64.st_other; // TODO: this as well
+            st_shndx = symbol64.st_shndx;
         }
 
         void Symbol32::write_out(std::ofstream& elf_file, size_t& offset) const {
             static_assert(sizeof(*this) == sizeof(Elf32_Sym));
             write_from_field(elf_file, *this);
-//            offset += sizeof(*this);
         }
 
         Section32::Section32(elf64::Section64 const &section64) {
@@ -417,7 +439,7 @@ namespace converter {
             header.sh_type = section64.header.sh_type == SHT_RELA ? SHT_REL : section64.header.sh_type;
             header.sh_flags = section64.header.sh_flags;
             header.sh_addr = section64.header.sh_addr;
-            header.sh_offset = static_cast<unsigned int>(-1); // will be set later
+            header.sh_offset = 0; // static_cast<unsigned int>(-1); // will be set later
             header.sh_size = section64.header.sh_size;
             header.sh_link = section64.header.sh_link;
             header.sh_info = section64.header.sh_info;
