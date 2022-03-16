@@ -146,6 +146,8 @@ namespace converter {
             if (e_shstrndx >= e_shnum) {
                 throw NonsupportedFileContent{"e_shstrndx is bigger than sections array size."};
             }
+
+            printf("Extracted Header64: e_shoff=%lu, e_shentsize=%u\n", e_shoff, e_shentsize);
         }
 
         Symbol64::Symbol64(std::ifstream &elf_stream) : Elf64_Sym{} {
@@ -166,19 +168,13 @@ namespace converter {
             read_to_field(elf_stream, r_addend);
         }
 
-        Section64::Section64(std::ifstream &elf_stream, Elf64_Ehdr const &elf_header) {
+        Section64::Section64(std::ifstream &elf_stream) {
             static int i = 0;
-            std::cout << "Extracting Section no " << i++ << " from start_idx " << elf_stream.tellg() << '\n';
 
-            read_to_field(elf_stream, header.sh_name);
-            read_to_field(elf_stream, header.sh_type);
-            read_to_field(elf_stream, header.sh_flags);
-            read_to_field(elf_stream, header.sh_addr);
-            read_to_field(elf_stream, header.sh_offset);
-            read_to_field(elf_stream, header.sh_size);
-            read_to_field(elf_stream, header.sh_info);
-            read_to_field(elf_stream, header.sh_addralign);
-            read_to_field(elf_stream, header.sh_entsize);
+            read_to_field(elf_stream, header);
+
+            std::cout << "Extracting Section no " << i++ << " from start_idx " << elf_stream.tellg() <<
+                ", align=" << header.sh_addralign << ", size=" << header.sh_size << '\n';
 
             /*char const *type = "other";
             switch (header.sh_type) {
@@ -216,6 +212,12 @@ namespace converter {
             return str_table.name_of(header.sh_name);
         }
 
+        Section64WithGenericData::Section64WithGenericData(Section64 section64, std::ifstream& elf_stream)
+                : Section64{std::move(section64)}, data{std::make_unique<char[]>(header.sh_size)} {
+            elf_stream.seekg(static_cast<ssize_t>(header.sh_offset));
+            elf_stream.read(data.get(), static_cast<ssize_t>(header.sh_size));
+        }
+
         Section64Rela::Section64Rela(Section64 section64, std::ifstream& elf_stream)  : Section64(std::move(section64)) {
             elf_stream.seekg(static_cast<ssize_t>(header.sh_offset));
             for (size_t i = 0; i < header.sh_size; i += sizeof(Elf64_Rela)) {
@@ -233,9 +235,8 @@ namespace converter {
             }
         }
 
-
         std::unique_ptr<Section64> Section64::parse_section(std::ifstream& elf_stream, Elf64_Ehdr const& elf_header) {
-            Section64 header_phase{elf_stream, elf_header};
+            Section64 header_phase{elf_stream};
 
             if (header_phase.header.sh_size) {
                 std::cout << "Data found in section, at " << header_phase.header.sh_offset << '\n';
@@ -278,7 +279,6 @@ namespace converter {
                 return std::make_unique<Section64WithoutData>(Section64WithoutData{std::move(header_phase)});
             }
         }
-
         Elf64::Elf64(std::ifstream &elf_stream) : header{elf_stream} {
             for (size_t i = 0; i < header.e_shnum; ++i) {
                 elf_stream.seekg(static_cast<ssize_t>(header.e_shoff + i * header.e_shentsize));
@@ -303,6 +303,7 @@ namespace converter {
                     if (cast != nullptr && cast->header.sh_offset != sections[header.e_shstrndx]->header.sh_offset)
                         return cast;
                 }
+                assert(false);
             }();
 
             // print symbol names
@@ -342,40 +343,251 @@ namespace converter {
                 }
             }
         }
+
 # undef read_to_field
     }
 
     namespace elf32 {
-        Header32::Header32(elf64::Header64 const& header64) : Elf32_Ehdr() {
+        void align_offset_to(size_t& offset, size_t const alignment) {
+            auto const rem = offset % alignment;
+            assert(rem >= 0);
+            if (rem > 0) offset += alignment - rem;
+        }
+        void align_offset_to(size_t& offset, size_t const alignment, std::ofstream& elf_file) {
+            size_t const offset_before = offset;
+
+            align_offset_to(offset, alignment);
+
+            size_t const stuffing = offset - offset_before;
+            for (uint32_t i = 0; i < stuffing; ++i) {
+                static char zero;
+                elf_file.write(&zero, 1);
+            }
+        }
+
+#define write_from_field(elf_stream, field) elf_stream.write(reinterpret_cast<char const*>(&(field)), sizeof(field))
+        Header32::Header32(elf64::Header64 const& header64) : Elf32_Ehdr{} {
             std::copy(std::begin(header64.e_ident), std::end(header64.e_ident), std::begin(e_ident));
+            e_ident[EI_CLASS] = ELFCLASS32;
             e_type = header64.e_type; // ET_REL
             e_machine = EM_386;
             e_version = EV_CURRENT;
             e_entry = truncate_addr(header64.e_entry);
-            e_phoff = truncate_addr(header64.e_phoff); // FIXME
+            e_phoff = 0;
             e_shoff = truncate_addr(header64.e_shoff); // FIXME
             e_flags = header64.e_flags;
             e_ehsize = sizeof(Elf32_Ehdr);
             e_phentsize = 0; // ET_REL justifies this.
-            e_phnum = header64.e_phnum;
+            e_phnum = 0;
             e_shentsize = header64.e_shentsize == 0 ? 0 : sizeof(Elf32_Shdr);
             e_shnum = header64.e_shnum;
             e_shstrndx = header64.e_shstrndx;
+        }
+
+        void Header32::write_out(std::ofstream& elf_stream, size_t& offset) const {
+            static_assert(sizeof(*this) == sizeof(Elf32_Ehdr));
+            printf("e_shoff: %u\n", e_shoff);
+            printf("e_phoff: %u\n", e_phoff);
+            write_from_field(elf_stream, *this);
+            offset += size();
         }
 
         Rel32::Rel32(elf64::Rela64 const& rela64) : Elf32_Rel{} {
             // TODO
         }
 
+        void Rel32::write_out(std::ofstream& elf_file, size_t& offset) const {
+            static_assert(sizeof(*this) == sizeof(Elf32_Rel));
+            write_from_field(elf_file, *this);
+//            offset += sizeof(*this);
+        }
+
         Symbol32::Symbol32(elf64::Symbol64 const& symbol64) : Elf32_Sym{} {
             // TODO
         }
 
-        Section32::Section32(elf64::Section64 const &section64, Elf32_Ehdr const &elf_header) {
+        void Symbol32::write_out(std::ofstream& elf_file, size_t& offset) const {
+            static_assert(sizeof(*this) == sizeof(Elf32_Sym));
+            write_from_field(elf_file, *this);
+//            offset += sizeof(*this);
+        }
+
+        Section32::Section32(elf64::Section64 const &section64) {
             header.sh_name = section64.header.sh_name;
+            header.sh_type = section64.header.sh_type == SHT_RELA ? SHT_REL : section64.header.sh_type;
+            header.sh_flags = section64.header.sh_flags;
+            header.sh_addr = section64.header.sh_addr;
+            header.sh_offset = static_cast<unsigned int>(-1); // will be set later
+            header.sh_size = section64.header.sh_size;
+            header.sh_link = section64.header.sh_link;
+            header.sh_info = section64.header.sh_info;
+            header.sh_addralign = section64.header.sh_addralign; // FIXME: for sure?
+            header.sh_entsize = section64.header.sh_entsize;
+
             // TODO
         }
+
+        void Section32::align_offset(size_t& offset) const {
+            align_offset_to(offset, alignment());
+        }
+
+        void Section32::align_offset(size_t& offset, std::ofstream& elf_file) const {
+            align_offset_to(offset, alignment(), elf_file);
+        }
+
+        void Section32::write_out_data(std::ofstream& elf_file, size_t& offset) const {
+            printf("(before alignment = %lx) ", offset);
+            align_offset(offset, elf_file);
+            printf("writing at offset %lx\n", offset);
+        }
+
+        void Section32::write_out_header(std::ofstream& elf_file, size_t& offset) const {
+            // section headers alignment
+            align_offset_to(offset, 8, elf_file);
+            printf("Writing out header at offset %lx\n", offset);
+            write_from_field(elf_file, header);
+            offset += sizeof(header);
+        }
+
+        Section32WithoutData::Section32WithoutData(elf64::Section64WithoutData const& section64)
+            : Section32(section64) {
+            // pass
+        }
+
+        Section32WithGenericData::Section32WithGenericData(elf64::Section64WithGenericData const& section64)
+            : Section32(section64), data{std::unique_ptr<char[]>([size=section64.header.sh_size, data=section64.data.get()](){
+                char* ptr = new char[size];
+                memcpy(ptr, data, size);
+                return ptr;
+            }())} {}
+
+        void Section32WithGenericData::write_out_data(std::ofstream& elf_file, size_t& offset) const {
+            Section32::write_out_data(elf_file, offset);
+            elf_file.write(data.get(), static_cast<ssize_t>(size()));
+            printf("GenericData offset=%lx\n", offset);
+        }
+
+        Section32Symtab::Section32Symtab(elf64::Section64Symtab const& symtab64) : Section32(symtab64) {
+            for (auto const& symbol64: symtab64.symbols) {
+                symbols.emplace_back(symbol64);
+            }
+            header.sh_entsize = sizeof(Elf32_Sym);
+            header.sh_size = sizeof(Elf32_Sym) * symbols.size();
+        }
+
+        void Section32Symtab::write_out_data(std::ofstream& elf_file, size_t& offset) const {
+            Section32::write_out_data(elf_file, offset);
+            for (auto const& symbol: symbols) {
+                symbol.write_out(elf_file, offset);
+            }
+        }
+
+        Section32Rel::Section32Rel(elf64::Section64Rela const& rela64) : Section32{rela64} {
+            for (auto const& relocation: rela64.relocations) {
+                relocations.emplace_back(relocation);
+            }
+            header.sh_entsize = sizeof(Elf32_Rel);
+            header.sh_size = sizeof(Elf32_Rel) * relocations.size();
+        }
+
+        void Section32Rel::write_out_data(std::ofstream& elf_file, size_t& offset) const {
+            Section32::write_out_data(elf_file, offset);
+            for (auto const& relocation: relocations) {
+                relocation.write_out(elf_file, offset);
+            }
+        }
+
+        std::unique_ptr<Section32> Section32::parse_section(elf64::Section64 const& section64, Header32 const& elf_header) {
+            if (dynamic_cast<elf64::Section64WithoutData const*>(&section64) != nullptr) {
+                return std::make_unique<Section32WithoutData>(Section32WithoutData{
+                        dynamic_cast<elf64::Section64WithoutData const&>(section64)
+                });
+            } else if (dynamic_cast<elf64::Section64Symtab const*>(&section64) != nullptr) {
+                return std::make_unique<Section32Symtab>(Section32Symtab{
+                        dynamic_cast<elf64::Section64Symtab const&>(section64)
+                });
+            } else if (dynamic_cast<elf64::Section64Rela const*>(&section64) != nullptr) {
+                return std::make_unique<Section32Rel>(Section32Rel{
+                        dynamic_cast<elf64::Section64Rela const&>(section64)
+                });
+            } else if (dynamic_cast<elf64::Section64WithGenericData const*>(&section64) != nullptr) {
+                return std::make_unique<Section32WithGenericData>(Section32WithGenericData{
+                        dynamic_cast<elf64::Section64WithGenericData const&>(section64)
+                });
+            } else {
+                assert(false);
+            }
+        }
+
+        Elf32::Elf32(elf64::Elf64 const& elf64) : header{elf64.header} {
+            for (auto const& section64: elf64.sections) {
+                sections.push_back(Section32::parse_section(*section64, header));
+            }
+            // TODO
+        }
+
+        void Elf32::correct_offsets() {
+/* *
+ * TODO
+ * 1) ELF header:
+ *     - shoff
+ * 2) Sections:
+ *     - sh_offset
+ *     - sh_size -> to chyba lepiej aktualizować na bieżąco w dodawanych sekcjach (?)
+ * 3) Relocations:
+ *     - r_offset -> to nie powinno ulec zmianie, bo to przesunięcie względem początku sekcji
+ * 4) Symbols:
+ *     (nothing here)
+ * */
+            size_t offset = sizeof(Elf32_Ehdr);
+            size_t i = 0;
+            for (auto const& section: sections) {
+                // alignment check
+                section->align_offset(offset);
+//                printf("Section %lu: aligned offset to %lu, requested %u\n", i++, offset, section->header.sh_addralign);
+
+                // set section data offset
+                section->set_offset(offset);
+
+                // increase
+                printf("Section %lu: before %lx, size: %lx, after %lx\n", i++, offset, section->size(), offset + section->size());
+                offset += section->size();
+//                printf("Increased offset to %lu\n", offset);
+            }
+
+            // section headers alignment
+            align_offset_to(offset, 8);
+
+            // set section headers offset
+            header.e_shoff = offset;
+
+        }
+
+        void Elf32::write_out(std::ofstream& elf_file) const {
+            // TODO
+
+            size_t offset = 0;
+            header.write_out(elf_file, offset);
+
+            size_t i = 0;
+            for (auto const& section: sections) {
+//                break; // FIXME
+                printf("Section %lu: ", i++);
+                section->write_out_data(elf_file, offset);
+                printf("Section %lu: before %lx, size: %lx, after %lx\n", i - 1, offset, section->size(), offset + section->size());
+                offset += section->size();
+            }
+
+            i = 0;
+            std::cout << "\nWriting headers:\n";
+            for (auto const& section: sections) {
+                printf("Section %lu: wrote header to %lx\n", i++, offset);
+                section->write_out_header(elf_file, offset);
+//                break; // FIXME
+            }
+        }
     }
+#undef write_from_field
 }
 
 int main4() {
@@ -392,27 +604,31 @@ int main4() {
 }
 
 int main(int argc, char const* argv[]) {
-/*    if (argc != 4) {
+    if (argc != 4) {
         std::cerr << "Wrong number of arguments.\n";
         return 1;
     }
 
     char const* elf64_file_name = argv[1];
     char const* functions_file_name = argv[2];
-    char const* elf32_file_name = argv[3];*/
+    char const* elf32_file_name = argv[3];
 
     std::ifstream func_stream;
     func_stream.exceptions(/*std::ifstream::eofbit | *//*std::ifstream::failbit | */std::ifstream::badbit);
-    func_stream.open(func_file_name, std::ifstream::in);
+    func_stream.open(functions_file_name, std::ifstream::in);
 
-    std::ifstream elf_stream;
-    elf_stream.exceptions(/*std::ifstream::eofbit | *//*std::ifstream::failbit | */std::ifstream::badbit);
-    elf_stream.open(elf_file_name, std::ifstream::in | std::ifstream::binary);
+    std::ifstream elf_istream;
+    elf_istream.exceptions(/*std::ifstream::eofbit | *//*std::ifstream::failbit | */std::ifstream::badbit);
+    elf_istream.open(elf64_file_name, std::ifstream::in | std::ifstream::binary);
+
+    std::ofstream elf_ostream;
+    elf_ostream.exceptions(/*std::ifstream::eofbit | *//*std::ifstream::failbit | */std::ifstream::badbit);
+    elf_ostream.open(elf32_file_name, std::ifstream::out | std::ifstream::binary);
 
 //    std::ofstream elf_copy_stream;
 //    elf_copy_stream.open(elf_copy_name, std::ofstream::out | std::ofstream::binary);
 
-//    std::copy(std::istreambuf_iterator<char>(elf_stream), std::istreambuf_iterator<char>(),
+//    std::copy(std::istreambuf_iterator<char>(elf_istream), std::istreambuf_iterator<char>(),
 //              std::ostreambuf_iterator<char>(elf_copy_stream));
 
     try {
@@ -420,7 +636,15 @@ int main(int argc, char const* argv[]) {
         functions.print();
         std::cout << "\n\n#############################\n\n";
 
-        converter::elf64::Elf64 elf64{elf_stream};
+        converter::Elf64 elf64{elf_istream};
+
+        converter::Elf32 elf32{elf64};
+
+        std::cout << "\nCorrecting offsets.\n";
+        elf32.correct_offsets();
+
+        std::cout << "\nWriting ELF32 out.\n";
+        elf32.write_out(elf_ostream);
 
     } catch (std::ifstream::failure const&) {
         std::cerr << "Error when processing file: read error or unexpected EOF.\n";

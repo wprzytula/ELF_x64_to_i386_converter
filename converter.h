@@ -108,6 +108,7 @@ namespace converter {
     }
 
     namespace elf64 {
+        struct Elf64;
         struct Header64;
         struct Rela64;
         struct Symbol64;
@@ -122,21 +123,112 @@ namespace converter {
     namespace elf32 {
         struct Header32 : Elf32_Ehdr {
             explicit Header32(elf64::Header64 const& header64);
-        };
 
+            [[nodiscard]] static constexpr size_t size() {
+                return sizeof(Elf32_Ehdr);
+            }
+
+            void write_out(std::ofstream& ofstream, size_t& offset) const;
+        };
 
         struct Rel32 : Elf32_Rel {
             explicit Rel32(elf64::Rela64 const& rela64);
+
+            void write_out(std::ofstream& elf_file, size_t& i) const;
         };
 
         struct Symbol32 : Elf32_Sym {
             explicit Symbol32(elf64::Symbol64 const& symbol64);
+
+            void write_out(std::ofstream& elf_file, size_t& i) const;
         };
 
         struct Section32 {
             Elf32_Shdr header{};
 
-            explicit Section32(elf64::Section64 const &section64, Elf32_Ehdr const &elf_header);
+            explicit Section32(elf64::Section64 const &section64);
+
+            Section32(Section32&& section) = default;
+            virtual ~Section32() = default;
+
+            static std::unique_ptr<Section32> parse_section(elf64::Section64 const&, Header32 const& elf_header);
+
+            [[nodiscard]] size_t size() const {
+                return header.sh_size;
+            }
+
+            [[nodiscard]] size_t alignment() const {
+                return header.sh_addralign == 0 ? 1 : header.sh_addralign;
+            }
+
+            void set_offset(Elf32_Addr const offset) {
+                header.sh_offset = offset;
+            }
+
+            virtual void write_out_data(std::ofstream& elf_file, size_t& offset) const;
+
+            void write_out_header(std::ofstream& elf_file, size_t& offset) const;
+
+            void align_offset(size_t& offset) const;
+
+            void align_offset(size_t& offset, std::ofstream& elf_file) const;
+        };
+
+        struct Section32WithoutData : public Section32 {
+            Section32WithoutData(Section32WithoutData&& section) = default;
+            ~Section32WithoutData() override = default;
+            explicit Section32WithoutData(elf64::Section64WithoutData const& section64);
+        };
+
+        struct Section32WithGenericData : public Section32 {
+            std::unique_ptr<char[]> data;
+
+            ~Section32WithGenericData() override = default;
+            Section32WithGenericData(Section32WithGenericData&& section) = default;
+
+            explicit Section32WithGenericData(elf64::Section64WithGenericData const& section64);
+
+            void write_out_data(std::ofstream& elf_file, size_t& offset) const override;
+        };
+
+        struct Section32Strtab final : public Section32WithGenericData {
+            ~Section32Strtab() override = default;
+            Section32Strtab(Section32Strtab&& section) = default;
+        };
+
+        struct Section32Symtab final : public Section32 {
+            std::vector<Symbol32> symbols;
+
+            ~Section32Symtab() override = default;
+            Section32Symtab(Section32Symtab&& section) = default;
+
+            explicit Section32Symtab(elf64::Section64Symtab const& symtab);
+
+            void write_out_data(std::ofstream& elf_file, size_t& offset) const override;
+        };
+
+        struct Section32Rel final : public Section32 {
+            std::vector<Rel32> relocations;
+
+            ~Section32Rel() override = default;
+            Section32Rel(Section32Rel&& section) = default;
+
+            explicit Section32Rel(elf64::Section64Rela const& rela);
+
+            void write_out_data(std::ofstream& elf_file, size_t& offset) const override;
+        };
+
+        // TODO: virtual destructors
+
+        struct Elf32 {
+            Header32 header;
+            std::vector<std::unique_ptr<Section32>> sections;
+
+            explicit Elf32(elf64::Elf64 const& elf64);
+
+            void correct_offsets();
+
+            void write_out(std::ofstream& elf_file) const;
         };
     }
 
@@ -154,12 +246,10 @@ namespace converter {
             explicit Rela64(std::ifstream &elf_stream);
         };
 
-
         struct Section64 {
-//            Elf64_Ehdr const& elf_header{};
             Elf64_Shdr header{};
 
-            explicit Section64(std::ifstream &elf_stream, Elf64_Ehdr const& elf_header);
+            explicit Section64(std::ifstream &elf_stream);
 
             Section64(Section64&& section) = default;
             virtual ~Section64() = default;
@@ -168,7 +258,7 @@ namespace converter {
             static std::unique_ptr<Section64> parse_section(std::ifstream& elf_stream, Elf64_Ehdr const& elf_header);
 
             virtual std::unique_ptr<elf32::Section32> to_32(Elf32_Ehdr const& elf32_header) {
-                return std::make_unique<elf32::Section32>(elf32::Section32{*this, elf32_header});
+                return std::make_unique<elf32::Section32>(elf32::Section32{*this});
             };
         };
 
@@ -179,16 +269,12 @@ namespace converter {
         };
 
         struct Section64WithGenericData : public Section64 {
-            explicit Section64WithGenericData(Section64 section64, std::ifstream& elf_stream)
-                    : Section64{std::move(section64)}, data{std::make_unique<char[]>(header.sh_size)} {
-                elf_stream.seekg(static_cast<ssize_t>(header.sh_offset));
-                elf_stream.read(data.get(), static_cast<ssize_t>(header.sh_size));
-            }
+            std::unique_ptr<char[]> data;
+
+            explicit Section64WithGenericData(Section64 section64, std::ifstream& elf_stream);
 
             ~Section64WithGenericData() override = default;
             Section64WithGenericData(Section64WithGenericData&&) = default;
-
-            std::unique_ptr<char[]> data;
 
         };
 
@@ -225,6 +311,9 @@ namespace converter {
             explicit Elf64(std::ifstream &elf_stream);
         };
     }
+
+    using elf64::Elf64;
+    using elf32::Elf32;
 }
 
 #endif //ZAD1_ELF_CONVERTER_CONVERTER_H
