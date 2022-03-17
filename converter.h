@@ -121,6 +121,16 @@ namespace converter {
     }
 
     namespace elf32 {
+        struct Section32;
+        struct Section32WithoutData;
+        struct Section32WithGenericData;
+        struct Section32Symtab;
+        struct Section32Strtab;
+        struct Section32Rel;
+        struct Section32Rela;
+
+        using sections32_t = std::vector<std::unique_ptr<Section32>>;
+
         struct Header32 : Elf32_Ehdr {
             explicit Header32(elf64::Header64 const& header64);
 
@@ -131,8 +141,14 @@ namespace converter {
             void write_out(std::ofstream& ofstream, size_t& offset) const;
         };
 
+        struct Rela32 : Elf32_Rela {
+            explicit Rela32(elf64::Rela64 const& rela64);
+
+//            void write_out(std::ofstream& ofstream, size_t& i) const; // FIXME: remove
+        };
+
         struct Rel32 : Elf32_Rel {
-            explicit Rel32(elf64::Rela64 const& rela64);
+            explicit Rel32(Rela32 const& rela32, Section32Rela const& section32_rela, sections32_t& sections);
 
             void write_out(std::ofstream& elf_file, size_t& i) const;
         };
@@ -147,9 +163,16 @@ namespace converter {
             Elf32_Shdr header{};
 
             explicit Section32(elf64::Section64 const &section64);
+            explicit Section32(Elf32_Shdr const& header);
 
             Section32(Section32&& section) = default;
             virtual ~Section32() = default;
+
+            [[nodiscard]] virtual std::string to_string() const {
+                return "Section32 generic";
+            }
+
+            [[nodiscard]] char const* type() const;
 
             static std::unique_ptr<Section32> parse_section(elf64::Section64 const&, Header32 const& elf_header);
 
@@ -177,7 +200,12 @@ namespace converter {
         struct Section32WithoutData : public Section32 {
             Section32WithoutData(Section32WithoutData&& section) = default;
             ~Section32WithoutData() override = default;
+
             explicit Section32WithoutData(elf64::Section64WithoutData const& section64);
+
+            [[nodiscard]] std::string to_string() const override {
+                return "Section32WithoutData";
+            }
         };
 
         struct Section32WithGenericData : public Section32 {
@@ -189,11 +217,19 @@ namespace converter {
             explicit Section32WithGenericData(elf64::Section64WithGenericData const& section64);
 
             void write_out_data(std::ofstream& elf_file, size_t& offset) const override;
+
+            [[nodiscard]] std::string to_string() const override {
+                return "Section32WithGenericData";
+            }
         };
 
         struct Section32Strtab final : public Section32WithGenericData {
             ~Section32Strtab() override = default;
             Section32Strtab(Section32Strtab&& section) = default;
+
+            [[nodiscard]] std::string to_string() const override {
+                return "Section32Strtab";
+            }
         };
 
         struct Section32Symtab final : public Section32 {
@@ -204,7 +240,26 @@ namespace converter {
 
             explicit Section32Symtab(elf64::Section64Symtab const& symtab);
 
+            [[nodiscard]] std::string to_string() const override {
+                return "Section32Symtab";
+            }
+
             void write_out_data(std::ofstream& elf_file, size_t& offset) const override;
+        };
+
+        struct Section32Rela final : public Section32 {
+            std::vector<Rela32> relocations;
+
+            ~Section32Rela() override = default;
+            Section32Rela(Section32Rela&& section) = default;
+
+            explicit Section32Rela(elf64::Section64Rela const& rela64);
+
+            [[nodiscard]] std::string to_string() const override {
+                return "Section32Rela";
+            }
+
+//            void write_out_data(std::ofstream& elf_file, size_t& offset) const override; // FIXME: remove
         };
 
         struct Section32Rel final : public Section32 {
@@ -213,18 +268,22 @@ namespace converter {
             ~Section32Rel() override = default;
             Section32Rel(Section32Rel&& section) = default;
 
-            explicit Section32Rel(elf64::Section64Rela const& rela);
+            [[nodiscard]] std::string to_string() const override {
+                return "Section32Rel";
+            }
+
+            explicit Section32Rel(Section32Rela const& rela32, std::vector<std::unique_ptr<Section32>>& sections);
 
             void write_out_data(std::ofstream& elf_file, size_t& offset) const override;
         };
-
-        // TODO: virtual destructors
 
         struct Elf32 {
             Header32 header;
             std::vector<std::unique_ptr<Section32>> sections;
 
             explicit Elf32(elf64::Elf64 const& elf64);
+
+            void convert_relocations();
 
             void correct_offsets();
 
@@ -256,10 +315,6 @@ namespace converter {
 
             [[nodiscard]] char const* name(Section64Strtab const &str_table) const;
             static std::unique_ptr<Section64> parse_section(std::ifstream& elf_stream, Elf64_Ehdr const& elf_header);
-
-            virtual std::unique_ptr<elf32::Section32> to_32(Elf32_Ehdr const& elf32_header) {
-                return std::make_unique<elf32::Section32>(elf32::Section32{*this});
-            };
         };
 
         struct Section64WithoutData : public Section64 {

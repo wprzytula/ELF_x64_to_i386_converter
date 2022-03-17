@@ -13,15 +13,14 @@
 #include "assemblage.h"
 #include "converter.h"
 
-constexpr char const* elf_file_name = "/home/xps15/Studia/Sem6/ZSO/Laby/Zad1_ELF_converter/tests/no_x64.o";
-constexpr char const* elf_copy_name = "/home/xps15/Studia/Sem6/ZSO/Laby/Zad1_ELF_converter/tests/no_i386_copy.o";
-
+//constexpr char const* elf_file_name = "/home/xps15/Studia/Sem6/ZSO/Laby/Zad1_ELF_converter/tests/no_x64.o";
+//constexpr char const* elf_copy_name = "/home/xps15/Studia/Sem6/ZSO/Laby/Zad1_ELF_converter/tests/no_i386_copy.o";
 constexpr char const* func_file_name = "/home/xps15/Studia/Sem6/ZSO/Laby/Zad1_ELF_converter/tests/example/test.flist";
 
 namespace converter {
-    class NonsupportedFileContent : public std::invalid_argument {
+    class UnsupportedFileContent : public std::invalid_argument {
     public:
-        explicit NonsupportedFileContent(std::string const& what) : std::invalid_argument(what) {}
+        explicit UnsupportedFileContent(std::string const& what) : std::invalid_argument(what) {}
     };
 
     uint32_t truncate_addr(uint64_t addr) {
@@ -106,17 +105,17 @@ namespace converter {
             if (strncmp(reinterpret_cast<char const *>(e_ident), ELFMAG, SELFMAG) != 0 ||
                 e_ident[EI_CLASS] != ELFCLASS64 ||
                 e_ident[EI_OSABI] != ELFOSABI_SYSV) {
-                throw NonsupportedFileContent{"Can only convert x64 object files conforming to System V ABI.\n"};
+                throw UnsupportedFileContent{"Can only convert x64 object files conforming to System V ABI.\n"};
             }
 
             read_to_field(elf_stream, e_type);
             if (e_type != ET_REL) {
-                throw NonsupportedFileContent{"Can only convert ET_REL executable files.\n"};
+                throw UnsupportedFileContent{"Can only convert ET_REL executable files.\n"};
             }
 
             read_to_field(elf_stream, e_machine);
             if (e_machine != EM_X86_64) {
-                throw NonsupportedFileContent{"Can only convert x86-64 arch executable files.\n"};
+                throw UnsupportedFileContent{"Can only convert x86-64 arch executable files.\n"};
             }
 
             read_to_field(elf_stream, e_version);
@@ -126,25 +125,25 @@ namespace converter {
             read_to_field(elf_stream, e_flags);
             read_to_field(elf_stream, e_ehsize);
             if (e_ehsize != sizeof(Elf64_Ehdr)) {
-                throw NonsupportedFileContent{"e_ehsize is different than expected header size."};
+                throw UnsupportedFileContent{"e_ehsize is different than expected header size."};
             }
             read_to_field(elf_stream, e_phentsize);
             read_to_field(elf_stream, e_phnum);
             if (e_phnum > 0 && e_phentsize != sizeof(Elf64_Phdr)) {
-                throw NonsupportedFileContent{"e_phnum is non-0, but e_phentsize is different than expected size."};
+                throw UnsupportedFileContent{"e_phnum is non-0, but e_phentsize is different than expected size."};
             } else if (e_phnum == 0 && e_phentsize != 0) {
-                throw NonsupportedFileContent{"e_phnum is 0, but e_phentsize is different than 0."};
+                throw UnsupportedFileContent{"e_phnum is 0, but e_phentsize is different than 0."};
             }
             read_to_field(elf_stream, e_shentsize);
             read_to_field(elf_stream, e_shnum);
             if (e_shnum > 0 && e_shentsize != sizeof(Elf64_Shdr)) {
-                throw NonsupportedFileContent{"e_shnum is non-0, but e_shentsize is different than expected size."};
+                throw UnsupportedFileContent{"e_shnum is non-0, but e_shentsize is different than expected size."};
             } else if (e_shnum == 0 && e_shentsize != 0) {
-                throw NonsupportedFileContent{"e_shnum is 0, but e_shentsize is different than 0."};
+                throw UnsupportedFileContent{"e_shnum is 0, but e_shentsize is different than 0."};
             }
             read_to_field(elf_stream, e_shstrndx);
             if (e_shstrndx >= e_shnum) {
-                throw NonsupportedFileContent{"e_shstrndx is bigger than sections array size."};
+                throw UnsupportedFileContent{"e_shstrndx is bigger than sections array size."};
             }
 
             printf("Extracted Header64: e_shoff=%lu, e_shentsize=%u\n", e_shoff, e_shentsize);
@@ -163,9 +162,11 @@ namespace converter {
         }
 
         Rela64::Rela64(std::ifstream &elf_stream) : Elf64_Rela{} {
-            read_to_field(elf_stream, r_offset);
-            read_to_field(elf_stream, r_info);
-            read_to_field(elf_stream, r_addend);
+//            read_to_field(elf_stream, r_offset);
+//            read_to_field(elf_stream, r_info);
+//            read_to_field(elf_stream, r_addend);
+            static_assert(sizeof(*this) == sizeof(Elf64_Rela));
+            read_to_field(elf_stream, *this);
         }
 
         Section64::Section64(std::ifstream &elf_stream) {
@@ -173,39 +174,10 @@ namespace converter {
 
             read_to_field(elf_stream, header);
 
-            std::cout << "Extracting Section no " << i++ << " from start_idx " << elf_stream.tellg() <<
-                ", align=" << header.sh_addralign << ", size=" << header.sh_size << '\n';
+//            std::cout << "Extracting Section no " << i++ << " from start_idx " << elf_stream.tellg() <<
+//                ", align=" << header.sh_addralign << ", size=" << header.sh_size << '\n';
 
-            /*char const *type = "other";
-            switch (header.sh_type) {
-                case SHT_NULL:
-                    type = "NULL";
-                    break;
-                case SHT_PROGBITS:
-                    type = "SHT_PROGBITS";
-                    break;
-                case SHT_NOBITS:
-                    type = "SHT_NOBITS";
-                    break;
-                case SHT_SYMTAB:
-                    type = "SHT_SYMTAB";
-                    break;
-                case SHT_STRTAB:
-                    type = "SHT_STRTAB";
-                    break;
-                case SHT_DYNAMIC:
-                    type = "SHT_DYNAMIC";
-                    break;
-                case SHT_RELA:
-                    type = "SHT_RELA";
-                    break;
-                case SHT_REL:
-                    type = "SHT_REL";
-                    break;
-                default:
-                    break;
-            }
-            std::cout << "Section type: " << type << '\n';*/
+//            std::cout << "Section type: " << type << '\n';
         }
 
         [[nodiscard]] char const* Section64::name(Section64Strtab const &str_table) const {
@@ -231,7 +203,7 @@ namespace converter {
             for (size_t i = 0; i < header.sh_size; i += sizeof(Elf64_Sym)) {
                 symbols.emplace_back(elf_stream);
                 auto const& symbol = *std::prev(std::end(symbols));
-                printf("Symbol: name=%u, shndx=0x%x, size=%lu\n", symbol.st_name, symbol.st_shndx, symbol.st_size);
+//                printf("Symbol: name=%u, shndx=0x%x, size=%lu\n", symbol.st_name, symbol.st_shndx, symbol.st_size);
             }
         }
 
@@ -279,6 +251,7 @@ namespace converter {
                 return std::make_unique<Section64WithoutData>(Section64WithoutData{std::move(header_phase)});
             }
         }
+
         Elf64::Elf64(std::ifstream &elf_stream) : header{elf_stream} {
             for (size_t i = 0; i < header.e_shnum; ++i) {
                 elf_stream.seekg(static_cast<ssize_t>(header.e_shoff + i * header.e_shentsize));
@@ -333,10 +306,13 @@ namespace converter {
                     // found RELA
                     std::cout << "Found RELA: " << cast->name(*secstrtab) << "\n";
                     for (auto const& relocation: cast->relocations) {
-                        Symbol64 const& symbol = symtab->symbols[ELF64_R_SYM(relocation.r_info)];
+                        auto const& symtab2 = dynamic_cast<Section64Symtab const&>(*sections[section->header.sh_link]);
+                        Symbol64 const& symbol = symtab2.symbols[ELF64_R_SYM(relocation.r_info)];
                         std::cout << "Relocation: offset=" << relocation.r_offset <<
                             ", SYM(info)=" << ELF64_R_SYM(relocation.r_info) <<
                             "<" << symstrtab->name_of(symbol.st_name) << ">" <<
+                            "(section=<" << sections[cast->header.sh_info]->name(*secstrtab) <<
+                            ">, size=" << sections[cast->header.sh_info]->header.sh_size << ")" <<
                             ", TYPE(info)=" << ELF64_R_TYPE(relocation.r_info) <<
                             "\n";
                     }
@@ -392,9 +368,9 @@ namespace converter {
             offset += size();
         }
 
-        Rel32::Rel32(elf64::Rela64 const& rela64) : Elf32_Rel{} {
+        Rela32::Rela32(elf64::Rela64 const& rela64) : Elf32_Rela{} {
             r_offset = truncate_addr(rela64.r_offset);
-            
+
             Elf32_Word const r_sym = ELF64_R_SYM(rela64.r_info);
             Elf32_Word const r_type = [&r_info=rela64.r_info](){
                 Elf32_Xword const r64_type = ELF64_R_TYPE(r_info);
@@ -406,13 +382,46 @@ namespace converter {
                     case R_X86_64_PLT32:
                         return R_386_PC32;
                     default:
-                        throw NonsupportedFileContent{"Unsupported relocation type: " + std::to_string(r64_type)};
+                        throw UnsupportedFileContent{"Unsupported relocation type: " + std::to_string(r64_type)};
                 }
             }();
-            printf("\nConverted symbol type=%u, sym=%u into type=%lu, sym=%u\n", r_type, r_sym, ELF64_R_TYPE(rela64.r_info), r_sym);
+//            printf("\nConverted relocation type=%u, sym=%u into type=%lu, sym=%u\n", r_type, r_sym, ELF64_R_TYPE(rela64.r_info), r_sym);
             r_info = ELF32_R_INFO(r_sym, r_type);
+            r_addend = static_cast<decltype(r_addend)>(rela64.r_addend);
 
-            // TODO: addend correction
+        }
+
+        /*void Rela32::write_out(std::ofstream& elf_file, size_t& offset) const {
+            static_assert(sizeof(*this) == sizeof(Elf32_Rela));
+            write_from_field(elf_file, *this);
+        }*/
+
+        Rel32::Rel32(Rela32 const& rela32, Section32Rela const& section32_rela, std::vector<std::unique_ptr<Section32>>& sections) : Elf32_Rel{} {
+            r_offset = rela32.r_offset;
+            r_info = rela32.r_info;
+            try {
+                auto const& symtab = dynamic_cast<Section32Symtab const&>(*sections[section32_rela.header.sh_link]);
+                auto const& symbol = symtab.symbols[ELF32_R_SYM(r_info)];
+
+                if (ELF32_ST_TYPE(symbol.st_info) != STT_NOTYPE) {
+                    try {
+                        auto& rel_section = dynamic_cast<Section32WithGenericData&>(*sections[section32_rela.header.sh_info]);
+                        using addend_t = std::remove_const_t<decltype(rela32.r_addend)>;
+
+//                        std::cout << "r_offset=" << r_offset << ", section_size=" << rel_section.header.sh_size << "\n";
+                        auto& addr = reinterpret_cast<addend_t&>(rel_section.data.get()[r_offset]);
+
+//                        std::cout << "Before addr=" << addr << "; addend=" << rela32.r_addend << "; ";
+                        addr += rela32.r_addend;
+//                        std::cout << "after addr=" << addr << '\n';
+
+                    } catch (std::bad_cast const&) {
+                        throw UnsupportedFileContent{"Rela section " + std::to_string(section32_rela.header.sh_info) + " is bound to section without data."};
+                    }
+                }
+            } catch (std::bad_cast const&) {
+                throw UnsupportedFileContent{"Section referenced in Rela section is not a Symtab section."};
+            }
         }
 
         void Rel32::write_out(std::ofstream& elf_file, size_t& offset) const {
@@ -436,7 +445,7 @@ namespace converter {
 
         Section32::Section32(elf64::Section64 const &section64) {
             header.sh_name = section64.header.sh_name;
-            header.sh_type = section64.header.sh_type == SHT_RELA ? SHT_REL : section64.header.sh_type;
+            header.sh_type = section64.header.sh_type; //  == SHT_RELA ? SHT_REL : section64.header.sh_type;
             header.sh_flags = section64.header.sh_flags;
             header.sh_addr = section64.header.sh_addr;
             header.sh_offset = 0; // static_cast<unsigned int>(-1); // will be set later
@@ -449,6 +458,33 @@ namespace converter {
             // TODO
         }
 
+        Section32::Section32(Elf32_Shdr const& header) {
+            this->header = header;
+        }
+
+        char const* Section32::type() const {
+            switch (header.sh_type) {
+                case SHT_NULL:
+                    return "NULL";
+                case SHT_PROGBITS:
+                    return "SHT_PROGBITS";
+                case SHT_NOBITS:
+                    return "SHT_NOBITS";
+                case SHT_SYMTAB:
+                    return "SHT_SYMTAB";
+                case SHT_STRTAB:
+                    return "SHT_STRTAB";
+                case SHT_DYNAMIC:
+                    return "SHT_DYNAMIC";
+                case SHT_RELA:
+                    return "SHT_RELA";
+                case SHT_REL:
+                    return "SHT_REL";
+                default:
+                    return "other";
+            }
+        }
+
         void Section32::align_offset(size_t& offset) const {
             align_offset_to(offset, alignment());
         }
@@ -458,15 +494,15 @@ namespace converter {
         }
 
         void Section32::write_out_data(std::ofstream& elf_file, size_t& offset) const {
-            printf("(before alignment = %lx) ", offset);
+//            printf("(before alignment = %lx) ", offset);
             align_offset(offset, elf_file);
-            printf("writing at offset %lx\n", offset);
+//            printf("writing at offset %lx\n", offset);
         }
 
         void Section32::write_out_header(std::ofstream& elf_file, size_t& offset) const {
             // section headers alignment
             align_offset_to(offset, 8, elf_file);
-            printf("Writing out header at offset %lx\n", offset);
+//            printf("Writing out header at offset %lx\n", offset);
             write_from_field(elf_file, header);
             offset += sizeof(header);
         }
@@ -486,7 +522,7 @@ namespace converter {
         void Section32WithGenericData::write_out_data(std::ofstream& elf_file, size_t& offset) const {
             Section32::write_out_data(elf_file, offset);
             elf_file.write(data.get(), static_cast<ssize_t>(size()));
-            printf("GenericData offset=%lx\n", offset);
+//            printf("GenericData offset=%lx\n", offset);
         }
 
         Section32Symtab::Section32Symtab(elf64::Section64Symtab const& symtab64) : Section32(symtab64) {
@@ -504,10 +540,26 @@ namespace converter {
             }
         }
 
-        Section32Rel::Section32Rel(elf64::Section64Rela const& rela64) : Section32{rela64} {
+        Section32Rela::Section32Rela(elf64::Section64Rela const& rela64) : Section32{rela64} {
             for (auto const& relocation: rela64.relocations) {
                 relocations.emplace_back(relocation);
             }
+            header.sh_entsize = sizeof(Elf32_Rela);
+            header.sh_size = sizeof(Elf32_Rela) * relocations.size();
+        }
+
+        /*void Section32Rela::write_out_data(std::ofstream& elf_file, size_t& offset) const {
+            Section32::write_out_data(elf_file, offset);
+            for (auto const& relocation: relocations) {
+                relocation.write_out(elf_file, offset);
+            }
+        }*/
+
+        Section32Rel::Section32Rel(Section32Rela const& rela32, sections32_t& sections) : Section32{rela32.header} {
+            for (auto const& relocation: rela32.relocations) {
+                relocations.emplace_back(relocation, rela32, sections);
+            }
+            header.sh_type = SHT_REL;
             header.sh_entsize = sizeof(Elf32_Rel);
             header.sh_size = sizeof(Elf32_Rel) * relocations.size();
         }
@@ -529,7 +581,7 @@ namespace converter {
                         dynamic_cast<elf64::Section64Symtab const&>(section64)
                 });
             } else if (dynamic_cast<elf64::Section64Rela const*>(&section64) != nullptr) {
-                return std::make_unique<Section32Rel>(Section32Rel{
+                return std::make_unique<Section32Rela>(Section32Rela{
                         dynamic_cast<elf64::Section64Rela const&>(section64)
                 });
             } else if (dynamic_cast<elf64::Section64WithGenericData const*>(&section64) != nullptr) {
@@ -545,7 +597,44 @@ namespace converter {
             for (auto const& section64: elf64.sections) {
                 sections.push_back(Section32::parse_section(*section64, header));
             }
+
+            for (auto const& section: sections) {
+                section.get();
+            }
+
             // TODO
+
+            /*for (auto const& section: sections) {
+                std::cout << section->type() << "\t: ";
+                std::cout << std::flush;
+                std::cout << section->to_string() << '\n';
+            }*/
+
+            std::cout << "###############################\nBegin relocation conversion\n";
+
+            // RELA into REL conversion:
+            convert_relocations();
+
+            // Symbols conversions:
+            // Case 1:
+            // Case 2:
+            // Case 3:
+        }
+
+        void Elf32::convert_relocations() {
+            for (auto& section: sections) {
+                std::cout << section->type() << "\t: ";
+                std::cout << std::flush;
+                std::cout << section->to_string() << '\n';
+                auto*const cast = dynamic_cast<Section32Rela*>(section.get());
+                if (cast != nullptr) {
+                    std::cout << "Creating new Section32Rel\n";
+                    std::unique_ptr<Section32> temp_unique = std::make_unique<Section32Rel>(Section32Rel{*cast, sections});
+                    assert(dynamic_cast<Section32Rel*>(temp_unique.get()) != nullptr);
+
+                    section.swap(temp_unique);
+                }
+            }
         }
 
         void Elf32::correct_offsets() {
@@ -572,7 +661,7 @@ namespace converter {
                 section->set_offset(offset);
 
                 // increase
-                printf("Section %lu: before %lx, size: %lx, after %lx\n", i++, offset, section->size(), offset + section->size());
+//                printf("Section %lu: before %lx, size: %lx, after %lx\n", i++, offset, section->size(), offset + section->size());
                 offset += section->size();
 //                printf("Increased offset to %lu\n", offset);
             }
@@ -582,30 +671,25 @@ namespace converter {
 
             // set section headers offset
             header.e_shoff = offset;
-
         }
 
         void Elf32::write_out(std::ofstream& elf_file) const {
-            // TODO
-
             size_t offset = 0;
             header.write_out(elf_file, offset);
 
             size_t i = 0;
             for (auto const& section: sections) {
-//                break; // FIXME
-                printf("Section %lu: ", i++);
+//                printf("Section %lu: ", i++);
                 section->write_out_data(elf_file, offset);
-                printf("Section %lu: before %lx, size: %lx, after %lx\n", i - 1, offset, section->size(), offset + section->size());
+//                printf("Section %lu: before %lx, size: %lx, after %lx\n", i - 1, offset, section->size(), offset + section->size());
                 offset += section->size();
             }
 
             i = 0;
             std::cout << "\nWriting headers:\n";
             for (auto const& section: sections) {
-                printf("Section %lu: wrote header to %lx\n", i++, offset);
+//                printf("Section %lu: wrote header to %lx\n", i++, offset);
                 section->write_out_header(elf_file, offset);
-//                break; // FIXME
             }
         }
     }
@@ -671,7 +755,7 @@ int main(int argc, char const* argv[]) {
     } catch (std::ifstream::failure const&) {
         std::cerr << "Error when processing file: read error or unexpected EOF.\n";
         return 1;
-    } catch (converter::NonsupportedFileContent const& e) {
+    } catch (converter::UnsupportedFileContent const& e) {
         std::cerr << "Nonsupported file content was found in the ELF.\n";
         std::cerr << e.what();
         return 1;
