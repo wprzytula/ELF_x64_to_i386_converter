@@ -27,7 +27,7 @@ namespace converter {
         return static_cast<uint32_t>(addr);
     }
 
-    namespace functions {
+    namespace func_spec {
         ArgType Arg::parse_arg_type(char const* argtype) {
 //            std::cout << "argtype: " << argtype << '\n';
             if (strcmp(argtype, "int") == 0) return int_t;
@@ -396,7 +396,7 @@ namespace converter {
             write_from_field(elf_file, *this);
         }*/
 
-        Rel32::Rel32(Rela32 const& rela32, Section32Rela const& section32_rela, std::vector<std::unique_ptr<Section32>>& sections) : Elf32_Rel{} {
+        Rel32::Rel32(Rela32 const& rela32, Section32Rela const& section32_rela, sections32_t& sections) : Elf32_Rel{} {
             r_offset = rela32.r_offset;
             r_info = rela32.r_info;
             try {
@@ -593,7 +593,7 @@ namespace converter {
             }
         }
 
-        Elf32::Elf32(elf64::Elf64 const& elf64) : header{elf64.header} {
+        Elf32::Elf32(elf64::Elf64 const& elf64, func_spec::Functions const& functions) : header{elf64.header} {
             for (auto const& section64: elf64.sections) {
                 sections.push_back(Section32::parse_section(*section64, header));
             }
@@ -601,8 +601,6 @@ namespace converter {
             for (auto const& section: sections) {
                 section.get();
             }
-
-            // TODO
 
             /*for (auto const& section: sections) {
                 std::cout << section->type() << "\t: ";
@@ -616,9 +614,10 @@ namespace converter {
             convert_relocations();
 
             // Symbols conversions:
-            // Case 1:
-            // Case 2:
-            // Case 3:
+            convert_symbols(functions);
+
+            std::cout << "\nCorrecting offsets.\n";
+            correct_offsets();
         }
 
         void Elf32::convert_relocations() {
@@ -635,6 +634,66 @@ namespace converter {
                     section.swap(temp_unique);
                 }
             }
+        }
+
+        void Elf32::convert_symbols(func_spec::Functions const& functions) {
+            for (std::unique_ptr<Section32> const& section: sections) {
+                auto* cast = dynamic_cast<Section32Symtab*>(section.get());
+                if (cast != nullptr) { // found SYMTAB
+                    for (auto& symbol: cast->symbols) {
+                        auto bind = ELF32_ST_BIND(symbol.st_info);
+                        auto type = ELF32_ST_TYPE(symbol.st_info);
+                        auto name = dynamic_cast<Section32Strtab&>(*sections[cast->header.sh_link]).name_of(symbol.st_name);
+                        if (bind == STB_GLOBAL && type == STT_FUNC) {
+                            // Case 1.
+                            // changing original symbols from GLOBAL to LOCAL.
+                            symbol.st_info = ELF32_ST_INFO(STB_LOCAL, STT_FUNC);
+
+                            assert(functions.find(name) != functions.end());
+                            auto const& func_spec = *functions.find(name);
+
+                            // adding new global symbols: trampolines that change mode from 32-bit to 64-bit,
+                            // call original function and change mode back to 32-bit.
+
+                            // adding new relocations that point from stubs to original symbols (e.g. thunk -> f)
+
+
+
+                        } else if (bind == STB_GLOBAL && type == STT_NOTYPE && functions.find(name) != functions.end()) {
+                            // Case 2.
+                            auto const& func_spec = *functions.find(name);
+
+                        }
+/*                        size_t idx = symbol.st_shndx;
+                        std::unique_ptr<Section32> const& section = sections[idx];
+                        section->name(*secstrtab);
+                        std::cout << "Symbol: <" << symstrtab->name_of(symbol.st_name) << ">,\t"
+                                  "relevant to section no=" << symbol.st_shndx << " : " <<
+                                  (symbol.special_section ? "" : section->name(*secstrtab) )
+                                  << '\n';*/
+                    }
+                }
+            }
+            /* - 1st case: calling our (64-bit) functions from outside (32-bit):
+             * - changing original symbols from GLOBAL to LOCAL
+             * - adding new global symbols: trampolines that change mode from 32-bit to 64-bit,
+             *   call original function and change mode back to 32-bit
+             * - adding new relocations that point from stubs to original symbols (e.g. thunk -> f)
+             * */
+
+
+
+            /* - 2nd case: calling external functions (32-bit O̶R̶ ̶6̶4̶-̶b̶i̶t̶ [crossed out because of 3.3 point of task content])
+             *   from our (64-bit) code:
+             * - adding new local symbols: stubs that change mode to 32-bit, call global symbols and come back to 64-bit
+             * - changing relocations in the way that now they point to new symbols (stubs)
+             *   instead of original external functions (e.g. [!-> fputs] => [-> thunk_fputs]) */
+
+
+            /* - 3rd case: calling our functions from our functions (both 64-bit):
+             * - no stubs needed */
+            // Case 3:
+
         }
 
         void Elf32::correct_offsets() {
@@ -701,7 +760,7 @@ int main4() {
     func_stream.exceptions(/*std::ifstream::eofbit | *//*std::ifstream::failbit | */std::ifstream::badbit);
     func_stream.open(func_file_name, std::ifstream::in);
 
-    converter::functions::Functions functions{func_stream};
+    converter::func_spec::Functions functions{func_stream};
     functions.print_one("f");
     functions.print();
 
@@ -720,11 +779,11 @@ int main(int argc, char const* argv[]) {
     char const* elf32_file_name = argv[3];
 
     std::ifstream func_stream;
-    func_stream.exceptions(/*std::ifstream::eofbit | *//*std::ifstream::failbit | */std::ifstream::badbit);
+    func_stream.exceptions(std::ifstream::badbit);
     func_stream.open(functions_file_name, std::ifstream::in);
 
     std::ifstream elf_istream;
-    elf_istream.exceptions(/*std::ifstream::eofbit | *//*std::ifstream::failbit | */std::ifstream::badbit);
+    elf_istream.exceptions(std::ifstream::badbit);
     elf_istream.open(elf64_file_name, std::ifstream::in | std::ifstream::binary);
 
     std::ofstream elf_ostream;
@@ -738,16 +797,13 @@ int main(int argc, char const* argv[]) {
 //              std::ostreambuf_iterator<char>(elf_copy_stream));
 
     try {
-        converter::functions::Functions functions{func_stream};
+        converter::func_spec::Functions functions{func_stream};
         functions.print();
         std::cout << "\n\n#############################\n\n";
 
         converter::Elf64 elf64{elf_istream};
 
-        converter::Elf32 elf32{elf64};
-
-        std::cout << "\nCorrecting offsets.\n";
-        elf32.correct_offsets();
+        converter::Elf32 elf32{elf64, functions};
 
         std::cout << "\nWriting ELF32 out.\n";
         elf32.write_out(elf_ostream);

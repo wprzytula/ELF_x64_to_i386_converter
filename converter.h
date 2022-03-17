@@ -9,7 +9,7 @@
 #include <set>
 
 namespace converter {
-    namespace functions {
+    namespace func_spec {
 
         enum struct ArgType {
             int_t,
@@ -75,8 +75,12 @@ namespace converter {
 
             explicit Functions(std::ifstream& func_stream);
 
-            decltype(functions.find("")) find(std::string const& name) {
+            [[nodiscard]] decltype(functions.find("")) find(std::string const& name) const {
                 return functions.find(name);
+            }
+
+            [[nodiscard]] decltype(functions.end()) end() const {
+                return functions.end();
             }
 
 //          debug only
@@ -227,6 +231,10 @@ namespace converter {
             ~Section32Strtab() override = default;
             Section32Strtab(Section32Strtab&& section) = default;
 
+            [[nodiscard]] char const* name_of(Elf32_Word i) const {
+                return &data.get()[i];
+            }
+
             [[nodiscard]] std::string to_string() const override {
                 return "Section32Strtab";
             }
@@ -272,18 +280,20 @@ namespace converter {
                 return "Section32Rel";
             }
 
-            explicit Section32Rel(Section32Rela const& rela32, std::vector<std::unique_ptr<Section32>>& sections);
+            explicit Section32Rel(Section32Rela const& rela32, sections32_t& sections);
 
             void write_out_data(std::ofstream& elf_file, size_t& offset) const override;
         };
 
         struct Elf32 {
             Header32 header;
-            std::vector<std::unique_ptr<Section32>> sections;
+            sections32_t sections;
 
-            explicit Elf32(elf64::Elf64 const& elf64);
+            explicit Elf32(elf64::Elf64 const& elf64, func_spec::Functions const& functions);
 
             void convert_relocations();
+
+            void convert_symbols(func_spec::Functions const& functions);
 
             void correct_offsets();
 
