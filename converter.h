@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 #include <set>
+#include <deque>
 
 namespace converter {
     namespace func_spec {
@@ -127,13 +128,14 @@ namespace converter {
     namespace elf32 {
         struct Section32;
         struct Section32WithoutData;
-        struct Section32WithGenericData;
+        struct Section32WithFixedSizeData;
         struct Section32Symtab;
         struct Section32Strtab;
         struct Section32Rel;
         struct Section32Rela;
 
-        using sections32_t = std::vector<std::unique_ptr<Section32>>;
+        // this prevents iterator invalidation after pushing to the back
+        using sections32_t = std::deque<std::unique_ptr<Section32>>;
 
         struct Header32 : Elf32_Ehdr {
             explicit Header32(elf64::Header64 const& header64);
@@ -160,6 +162,10 @@ namespace converter {
         struct Symbol32 : Elf32_Sym {
             explicit Symbol32(elf64::Symbol64 const& symbol64);
 
+            [[nodiscard]] decltype(st_shndx) related_section() const {
+                return st_shndx;
+            }
+
             void write_out(std::ofstream& elf_file, size_t& i) const;
         };
 
@@ -178,11 +184,9 @@ namespace converter {
 
             [[nodiscard]] char const* type() const;
 
-            static std::unique_ptr<Section32> parse_section(elf64::Section64 const&, Header32 const& elf_header);
+            static std::unique_ptr<Section32> convert_section(elf64::Section64 const& section64, Header32 const& elf_header);
 
-            [[nodiscard]] size_t size() const {
-                return header.sh_size;
-            }
+            [[nodiscard]] virtual size_t size() = 0;
 
             [[nodiscard]] size_t alignment() const {
                 return header.sh_addralign == 0 ? 1 : header.sh_addralign;
@@ -192,7 +196,7 @@ namespace converter {
                 header.sh_offset = offset;
             }
 
-            virtual void write_out_data(std::ofstream& elf_file, size_t& offset) const;
+            virtual void write_out_data(std::ofstream& elf_file, size_t& offset);
 
             void write_out_header(std::ofstream& elf_file, size_t& offset) const;
 
@@ -207,33 +211,54 @@ namespace converter {
 
             explicit Section32WithoutData(elf64::Section64WithoutData const& section64);
 
+            size_t size() override;
+
             [[nodiscard]] std::string to_string() const override {
                 return "Section32WithoutData";
             }
         };
 
-        struct Section32WithGenericData : public Section32 {
+        struct Section32WithFixedSizeData : public Section32 {
             std::unique_ptr<char[]> data;
 
-            ~Section32WithGenericData() override = default;
-            Section32WithGenericData(Section32WithGenericData&& section) = default;
+            ~Section32WithFixedSizeData() override = default;
+            Section32WithFixedSizeData(Section32WithFixedSizeData&& section) = default;
 
-            explicit Section32WithGenericData(elf64::Section64WithGenericData const& section64);
+            explicit Section32WithFixedSizeData(elf64::Section64WithGenericData const& section64);
 
-            void write_out_data(std::ofstream& elf_file, size_t& offset) const override;
+            size_t size() override;
+
+            void write_out_data(std::ofstream& elf_file, size_t& offset) override;
 
             [[nodiscard]] std::string to_string() const override {
-                return "Section32WithGenericData";
+                return "Section32WithFixedSizeData";
             }
         };
 
-        struct Section32Strtab final : public Section32WithGenericData {
+        struct Section32WithGrowableData : public Section32 {
+            std::vector<uint8_t> data;
+
+            ~Section32WithGrowableData() override = default;
+            Section32WithGrowableData(Section32WithGrowableData&& section) = default;
+
+            explicit Section32WithGrowableData(Elf32_Shdr const& header);
+
+            explicit Section32WithGrowableData(elf64::Section64WithGenericData const& section64);
+
+            [[nodiscard]] size_t size() override;
+        };
+
+        struct Section32Strtab final : public Section32WithGrowableData {
             ~Section32Strtab() override = default;
             Section32Strtab(Section32Strtab&& section) = default;
 
+            explicit Section32Strtab(elf64::Section64Strtab const& strtab64);
+
             [[nodiscard]] char const* name_of(Elf32_Word i) const {
-                return &data.get()[i];
+                return reinterpret_cast<char const*>(data.data() + i);
             }
+
+            [[nodiscard]] Elf32_Word append_name(std::string const& name);
 
             [[nodiscard]] std::string to_string() const override {
                 return "Section32Strtab";
@@ -248,11 +273,17 @@ namespace converter {
 
             explicit Section32Symtab(elf64::Section64Symtab const& symtab);
 
+            [[nodiscard]] decltype(header.sh_link) strtab() const {
+                return header.sh_link;
+            }
+
             [[nodiscard]] std::string to_string() const override {
                 return "Section32Symtab";
             }
 
-            void write_out_data(std::ofstream& elf_file, size_t& offset) const override;
+            void write_out_data(std::ofstream& elf_file, size_t& offset) override;
+
+            size_t size() override;
         };
 
         struct Section32Rela final : public Section32 {
@@ -266,6 +297,8 @@ namespace converter {
             [[nodiscard]] std::string to_string() const override {
                 return "Section32Rela";
             }
+
+            size_t size() override;
 
 //            void write_out_data(std::ofstream& elf_file, size_t& offset) const override; // FIXME: remove
         };
@@ -282,12 +315,57 @@ namespace converter {
 
             explicit Section32Rel(Section32Rela const& rela32, sections32_t& sections);
 
-            void write_out_data(std::ofstream& elf_file, size_t& offset) const override;
+            void write_out_data(std::ofstream& elf_file, size_t& offset) override;
+
+            size_t size() override;
+        };
+
+        /*
+         * SectionWithGrowableData -> Strtab, Thunkin, Thunkout
+         * */
+
+        struct Section32Thunk : public Section32WithGrowableData {
+        private:
+            explicit Section32Thunk(Elf32_Shdr const& header) : Section32WithGrowableData{header} {}
+        public:
+            static Section32Thunk make_thunk(Section32 const& thunked_section, Section32Strtab& strtab, std::string const& name) {
+                std::string thunk_section_name{strtab.name_of(thunked_section.header.sh_name)};
+                thunk_section_name += name;
+                Elf32_Word name_idx = strtab.append_name(thunk_section_name);
+
+                Elf32_Shdr header{
+                        .sh_name = name_idx,
+                        .sh_type = SHT_PROGBITS,
+                        .sh_flags = SHF_ALLOC | SHF_EXECINSTR,
+                        .sh_addr = 0,
+                        .sh_offset = 0, // so far
+                        .sh_size = 0, // so far
+                        .sh_link = 0,
+                        .sh_info = 0,
+                        .sh_addralign = 1,
+                        .sh_entsize = 0
+                };
+
+                return Section32Thunk{header};
+            }
+        };
+
+        struct Section32Thunkin final : public Section32Thunk {
+            explicit Section32Thunkin(Section32 const& thunked_section, Section32Strtab& strtab)
+                : Section32Thunk{make_thunk(thunked_section, strtab, ".thunkin")} {}
+
+            [[nodiscard]] size_t add_thunkin();
+        };
+
+        struct Section32Thunkout final : public Section32Thunk {
+            explicit Section32Thunkout(Section32 const& thunked_section, Section32Strtab& strtab)
+            : Section32Thunk{make_thunk(thunked_section, strtab, ".thunkout")} {}
         };
 
         struct Elf32 {
             Header32 header;
             sections32_t sections;
+            Section32Strtab*const strtab;
 
             explicit Elf32(elf64::Elf64 const& elf64, func_spec::Functions const& functions);
 

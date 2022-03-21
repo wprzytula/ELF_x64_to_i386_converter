@@ -97,6 +97,72 @@ namespace converter {
         }
     }
 
+    namespace stubs {
+        std::string const thunkin = R"(
+# long long fun(void *ptr, int x, long long y)
+
+.code32
+fun_stub:
+# zapis rejestrów
+pushl %edi
+pushl %esi
+# wyrównanie stosu
+subl $4, %esp
+# zmiana trybu
+ljmpl *fun_addr_32to64
+
+# część 64-bitowa
+.code64
+fun_stub_64:
+# bierzemy argumenty ze stosu
+movl 0x10(%rsp), %edi
+movslq 0x14(%rsp), %rsi
+movq 0x18(%rsp), $rdx
+# wołamy właściwą funkcję
+call fun
+# konwersja wartości zwracanej
+movq %rax, %rdx
+shrq $32, %rdx
+# powrót
+ljmpl *fun_addr_64to32
+
+.code32
+fun_stub_32:
+addl $4, %esp
+popl %esi
+popl %edi
+retl
+
+fun_addr_64to32:
+.long fun_stub_32
+.long 0x23
+
+fun_addr_32to64:
+.long fun_stub_64
+.long 0x33
+)";
+        /* *
+         * 00000000  57 56 83 ec 04 ff 2d 00  00 00 00 48 63 7c 24 10
+         * 00000010  48 63 74 24 14 48 63 54  24 18 48 63 4c 24 1c 4c
+         * 00000020  63 44 24 20 4c 63 4c 24  24 e8 00 00 00 00 48 89
+         * 00000030  c2 48 c1 ea 20 ff 2c 25  00 00 00 00 83 c4 04 5e
+         * 00000040  5f c3 00 00 00 00 23 00  00 00 00 00 00 00 33 00
+         * 00000050  00 00
+         * */
+        unsigned char const thunkin_code[] = {
+            /* 00 */   0x57, 0x56, 0x83, 0xec, 0x04, 0xff, 0x2d, 0x00, // 7: R_X86_64_32        .text+0x4a
+            /* 08 */   0x00, 0x00, 0x00, 0x48, 0x63, 0x7c, 0x24, 0x10,
+            /* 10 */   0x48, 0x63, 0x74, 0x24, 0x14, 0x48, 0x63, 0x54,
+            /* 18 */   0x24, 0x18, 0x48, 0x63, 0x4c, 0x24, 0x1c, 0x4c,
+            /* 20 */   0x63, 0x44, 0x24, 0x20, 0x4c, 0x63, 0x4c, 0x24,
+            /* 28 */   0x24, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x89, // 2a: R_X86_64_PLT32    fun-0x4
+            /* 30 */   0xc2, 0x48, 0xc1, 0xea, 0x20, 0xff, 0x2c, 0x25,
+            /* 38 */   0x00, 0x00, 0x00, 0x00, 0x83, 0xc4, 0x04, 0x5e, // 38: R_X86_64_32S      .text+0x42
+            /* 40 */   0x5f, 0xc3, 0x00, 0x00, 0x00, 0x00, 0x23, 0x00, // 42: R_X86_64_32       .text+0x3c
+            /* 48 */   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x33, 0x00, // 4a: R_X86_64_32       .text+0xb
+            /* 50 */   0x00, 0x00 };
+    }
+
     namespace elf64 {
 #define read_to_field(elf_stream, field) elf_stream.read(reinterpret_cast<char*>(&(field)), sizeof(field))
 
@@ -265,7 +331,7 @@ namespace converter {
             {
                 size_t i = 0;
                 for (std::unique_ptr<Section64> const& section: sections) {
-                    std::cout << "Section "<< i++ << " " << section->name(*secstrtab) << '\n';
+                    std::cout << "Section "<< i++ << " " << section->name(*secstrtab) << ", entrysize=" << section->header.sh_entsize << '\n';
                 }
             }
 
@@ -405,7 +471,7 @@ namespace converter {
 
                 if (ELF32_ST_TYPE(symbol.st_info) != STT_NOTYPE) {
                     try {
-                        auto& rel_section = dynamic_cast<Section32WithGenericData&>(*sections[section32_rela.header.sh_info]);
+                        auto& rel_section = dynamic_cast<Section32WithFixedSizeData&>(*sections[section32_rela.header.sh_info]);
                         using addend_t = std::remove_const_t<decltype(rela32.r_addend)>;
 
 //                        std::cout << "r_offset=" << r_offset << ", section_size=" << rel_section.header.sh_size << "\n";
@@ -493,7 +559,7 @@ namespace converter {
             align_offset_to(offset, alignment(), elf_file);
         }
 
-        void Section32::write_out_data(std::ofstream& elf_file, size_t& offset) const {
+        void Section32::write_out_data(std::ofstream& elf_file, size_t& offset) {
 //            printf("(before alignment = %lx) ", offset);
             align_offset(offset, elf_file);
 //            printf("writing at offset %lx\n", offset);
@@ -512,20 +578,55 @@ namespace converter {
             // pass
         }
 
-        Section32WithGenericData::Section32WithGenericData(elf64::Section64WithGenericData const& section64)
+        size_t Section32WithoutData::size() {
+            return 0;
+        }
+
+        Section32WithFixedSizeData::Section32WithFixedSizeData(elf64::Section64WithGenericData const& section64)
             : Section32(section64), data{std::unique_ptr<char[]>([size=section64.header.sh_size, data=section64.data.get()](){
                 char* ptr = new char[size];
-                memcpy(ptr, data, size);
+                std::copy(data, data + size, ptr);
                 return ptr;
             }())} {}
 
-        void Section32WithGenericData::write_out_data(std::ofstream& elf_file, size_t& offset) const {
+        void Section32WithFixedSizeData::write_out_data(std::ofstream& elf_file, size_t& offset) {
             Section32::write_out_data(elf_file, offset);
             elf_file.write(data.get(), static_cast<ssize_t>(size()));
 //            printf("GenericData offset=%lx\n", offset);
         }
 
-        Section32Symtab::Section32Symtab(elf64::Section64Symtab const& symtab64) : Section32(symtab64) {
+        size_t Section32WithFixedSizeData::size() {
+            return header.sh_size;
+        }
+
+        Section32WithGrowableData::Section32WithGrowableData(elf64::Section64WithGenericData const& section64)
+            : Section32{section64} {
+            data.resize(section64.header.sh_size);
+            std::copy(section64.data.get(), section64.data.get() + section64.header.sh_size, data.data());
+        }
+
+        Section32WithGrowableData::Section32WithGrowableData(Elf32_Shdr const& header) : Section32{header} {}
+
+        size_t Section32WithGrowableData::size() {
+            header.sh_size = data.size();
+            return header.sh_size;
+        }
+
+        Section32Strtab::Section32Strtab(elf64::Section64Strtab const& strtab64)
+                : Section32WithGrowableData{strtab64} {}
+
+        Elf32_Word Section32Strtab::append_name(std::string const& name) {
+            for (char c: name) {
+                data.emplace_back(c);
+            }
+            data.emplace_back('\0');
+
+            Elf32_Word pos = header.sh_size;
+            header.sh_size += name.size() + 1;
+            return pos;
+        }
+
+        Section32Symtab::Section32Symtab(elf64::Section64Symtab const& symtab64) : Section32{symtab64} {
             for (auto const& symbol64: symtab64.symbols) {
                 symbols.emplace_back(symbol64);
             }
@@ -533,11 +634,16 @@ namespace converter {
             header.sh_size = sizeof(Elf32_Sym) * symbols.size();
         }
 
-        void Section32Symtab::write_out_data(std::ofstream& elf_file, size_t& offset) const {
+        void Section32Symtab::write_out_data(std::ofstream& elf_file, size_t& offset) {
             Section32::write_out_data(elf_file, offset);
             for (auto const& symbol: symbols) {
                 symbol.write_out(elf_file, offset);
             }
+        }
+
+        size_t Section32Symtab::size() {
+            header.sh_size = sizeof(Elf32_Sym) * symbols.size();
+            return header.sh_size;
         }
 
         Section32Rela::Section32Rela(elf64::Section64Rela const& rela64) : Section32{rela64} {
@@ -546,6 +652,11 @@ namespace converter {
             }
             header.sh_entsize = sizeof(Elf32_Rela);
             header.sh_size = sizeof(Elf32_Rela) * relocations.size();
+        }
+
+        size_t Section32Rela::size() {
+            header.sh_size = sizeof(Elf32_Rela) * relocations.size();
+            return header.sh_size;
         }
 
         /*void Section32Rela::write_out_data(std::ofstream& elf_file, size_t& offset) const {
@@ -564,14 +675,27 @@ namespace converter {
             header.sh_size = sizeof(Elf32_Rel) * relocations.size();
         }
 
-        void Section32Rel::write_out_data(std::ofstream& elf_file, size_t& offset) const {
+        void Section32Rel::write_out_data(std::ofstream& elf_file, size_t& offset) {
             Section32::write_out_data(elf_file, offset);
             for (auto const& relocation: relocations) {
                 relocation.write_out(elf_file, offset);
             }
         }
 
-        std::unique_ptr<Section32> Section32::parse_section(elf64::Section64 const& section64, Header32 const& elf_header) {
+        size_t Section32Rel::size() {
+            header.sh_size = sizeof(Elf32_Rel) * relocations.size();
+            return header.sh_size;
+        }
+
+        size_t Section32Thunkin::add_thunkin() {
+            auto const pos = data.size();
+            for (auto byte: stubs::thunkin_code) {
+                data.push_back(byte);
+            }
+            return pos;
+        }
+
+        std::unique_ptr<Section32> Section32::convert_section(elf64::Section64 const& section64, Header32 const& elf_header) {
             if (dynamic_cast<elf64::Section64WithoutData const*>(&section64) != nullptr) {
                 return std::make_unique<Section32WithoutData>(Section32WithoutData{
                         dynamic_cast<elf64::Section64WithoutData const&>(section64)
@@ -584,8 +708,12 @@ namespace converter {
                 return std::make_unique<Section32Rela>(Section32Rela{
                         dynamic_cast<elf64::Section64Rela const&>(section64)
                 });
+            } else if (dynamic_cast<elf64::Section64Strtab const*>(&section64) != nullptr) {
+                return std::make_unique<Section32Strtab>(Section32Strtab{
+                        dynamic_cast<elf64::Section64Strtab const&>(section64)
+                });
             } else if (dynamic_cast<elf64::Section64WithGenericData const*>(&section64) != nullptr) {
-                return std::make_unique<Section32WithGenericData>(Section32WithGenericData{
+                return std::make_unique<Section32WithFixedSizeData>(Section32WithFixedSizeData{
                         dynamic_cast<elf64::Section64WithGenericData const&>(section64)
                 });
             } else {
@@ -593,14 +721,23 @@ namespace converter {
             }
         }
 
-        Elf32::Elf32(elf64::Elf64 const& elf64, func_spec::Functions const& functions) : header{elf64.header} {
-            for (auto const& section64: elf64.sections) {
-                sections.push_back(Section32::parse_section(*section64, header));
-            }
-
-            for (auto const& section: sections) {
-                section.get();
-            }
+        Elf32::Elf32(elf64::Elf64 const& elf64, func_spec::Functions const& functions)
+            : header{elf64.header},
+              sections{[&header=this->header, &elf64_sections=elf64.sections](){
+                  sections32_t _sections;
+                  for (auto const& section64: elf64_sections) {
+                      _sections.push_back(Section32::convert_section(*section64, header));
+                  }
+                  return _sections;
+              }()},
+              strtab{[](Section32* section){
+                  std::cout << section->type() << '\n';
+                  auto _strtab = dynamic_cast<Section32Strtab*>(section);
+                  if (_strtab == nullptr) {
+                      throw UnsupportedFileContent{"Strtab given in the ELF header is not valid."};
+                  }
+                  return _strtab;
+              }(sections[header.e_shstrndx].get())} {
 
             /*for (auto const& section: sections) {
                 std::cout << section->type() << "\t: ";
@@ -637,33 +774,58 @@ namespace converter {
         }
 
         void Elf32::convert_symbols(func_spec::Functions const& functions) {
-            for (std::unique_ptr<Section32> const& section: sections) {
-                auto* cast = dynamic_cast<Section32Symtab*>(section.get());
-                if (cast != nullptr) { // found SYMTAB
-                    for (auto& symbol: cast->symbols) {
-                        auto bind = ELF32_ST_BIND(symbol.st_info);
-                        auto type = ELF32_ST_TYPE(symbol.st_info);
-                        auto name = dynamic_cast<Section32Strtab&>(*sections[cast->header.sh_link]).name_of(symbol.st_name);
-                        if (bind == STB_GLOBAL && type == STT_FUNC) {
-                            // Case 1.
-                            // changing original symbols from GLOBAL to LOCAL.
-                            symbol.st_info = ELF32_ST_INFO(STB_LOCAL, STT_FUNC);
+            std::vector<std::optional<size_t>> thunkin_section_idcs{sections.size()};
+            std::vector<std::optional<size_t>> thunkout_section_idcs{sections.size()};
 
-                            assert(functions.find(name) != functions.end());
-                            auto const& func_spec = *functions.find(name);
+            try {
+                for (std::unique_ptr<Section32> const& section: sections) {
+                    auto* cast_section = dynamic_cast<Section32Symtab*>(section.get());
+                    if (cast_section != nullptr) { // found SYMTAB
+                        for (auto& symbol: cast_section->symbols) {
+                            auto bind = ELF32_ST_BIND(symbol.st_info);
+                            auto type = ELF32_ST_TYPE(symbol.st_info);
+                            auto name = dynamic_cast<Section32Strtab&>(*sections[cast_section->strtab()]).name_of(symbol.st_name);
 
-                            // adding new global symbols: trampolines that change mode from 32-bit to 64-bit,
-                            // call original function and change mode back to 32-bit.
+                            if (bind == STB_GLOBAL && type == STT_FUNC) {
+                                // Case 1.
+                                // - change original symbols from GLOBAL to LOCAL.
+                                symbol.st_info = ELF32_ST_INFO(STB_LOCAL, STT_FUNC);
 
-                            // adding new relocations that point from stubs to original symbols (e.g. thunk -> f)
+                                if (functions.find(name) == functions.end()) {
+                                    throw UnsupportedFileContent{std::string{"Local function "} + name + " not present in function file."};
+                                }
+                                auto const& func_spec = *functions.find(name);
+
+                                // - create thunkin section if not exist
+                                if (!thunkin_section_idcs[symbol.related_section()].has_value()) {
+                                    thunkin_section_idcs[symbol.related_section()] = std::make_optional<>(sections.size());
+                                    sections.emplace_back(new Section32Thunkin(*section, *strtab));
+                                }
+
+                                // - add new global symbols: trampolines that change mode from 32-bit to 64-bit,
+                                //   call original function and change mode back to 32-bit.
+                                auto& thunkin_section = dynamic_cast<Section32Thunkin&>(
+                                        *sections[*thunkin_section_idcs[symbol.related_section()]]);
+
+                                size_t const thunkin_base = thunkin_section.add_thunkin();
+
+                                // - add new relocations that point from stubs to original symbols (e.g. thunk -> f)
 
 
 
-                        } else if (bind == STB_GLOBAL && type == STT_NOTYPE && functions.find(name) != functions.end()) {
-                            // Case 2.
-                            auto const& func_spec = *functions.find(name);
+                            } else if (bind == STB_GLOBAL && type == STT_NOTYPE && functions.find(name) != functions.end()) {
+                                // Case 2.
+                                auto const& func_spec = *functions.find(name);
+                                if (functions.find(name) != functions.end()) {
+                                    // the symbol is an external function, so we shall:
+                                    // - add new local symbols: stubs that change mode to 32-bit,
+                                    //   call global symbols and come back to 64-bit:
 
-                        }
+
+                                    // - change relocations in the way that now they point to new symbols (stubs)
+                                    //   instead of original external functions (e.g. [!-> fputs] => [-> thunk_fputs])
+                                }
+                            }
 /*                        size_t idx = symbol.st_shndx;
                         std::unique_ptr<Section32> const& section = sections[idx];
                         section->name(*secstrtab);
@@ -671,16 +833,20 @@ namespace converter {
                                   "relevant to section no=" << symbol.st_shndx << " : " <<
                                   (symbol.special_section ? "" : section->name(*secstrtab) )
                                   << '\n';*/
+                        }
                     }
                 }
+
+            } catch (std::bad_cast const&) {
+                throw UnsupportedFileContent{"Bad symbol name strtab index."};
             }
+
             /* - 1st case: calling our (64-bit) functions from outside (32-bit):
              * - changing original symbols from GLOBAL to LOCAL
              * - adding new global symbols: trampolines that change mode from 32-bit to 64-bit,
              *   call original function and change mode back to 32-bit
              * - adding new relocations that point from stubs to original symbols (e.g. thunk -> f)
              * */
-
 
 
             /* - 2nd case: calling external functions (32-bit O̶R̶ ̶6̶4̶-̶b̶i̶t̶ [crossed out because of 3.3 point of task content])
