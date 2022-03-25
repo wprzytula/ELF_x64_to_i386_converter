@@ -133,8 +133,11 @@ namespace converter {
         struct Section32Strtab;
         struct Section32Rel;
         struct Section32Rela;
+        struct Section32Thunk;
+        struct Section32Thunkin;
+        struct Section32Thunkout;
 
-        // this prevents iterator invalidation after pushing to the back
+        // deque prevents iterator invalidation after pushing to the back
         using sections32_t = std::deque<std::unique_ptr<Section32>>;
 
         struct Header32 : Elf32_Ehdr {
@@ -154,19 +157,57 @@ namespace converter {
         };
 
         struct Rel32 : Elf32_Rel {
+        private:
+            explicit Rel32(Elf32_Addr offset, Elf32_Word type, Elf32_Word symbol_idx);
+        public:
             explicit Rel32(Rela32 const& rela32, Section32Rela const& section32_rela, sections32_t& sections);
+
+            static Rel32 self_ref(Elf32_Addr offset, Elf32_Word self_symbol_idx);
+
+            static Rel32 local_symbol_ref(Elf32_Addr offset, Elf32_Word local_symbol_idx);
 
             void write_out(std::ofstream& elf_file, size_t& i) const;
         };
 
         struct Symbol32 : Elf32_Sym {
+        private:
+            explicit Symbol32(Symbol32 const& symbol, bool global, Elf32_Word thunk_section_idx);
+            explicit Symbol32(Section32 const& section, Elf32_Word section_idx,
+                              Elf32_Word section_name_idx);
+        public:
             explicit Symbol32(elf64::Symbol64 const& symbol64);
 
-            [[nodiscard]] decltype(st_shndx) related_section() const {
+            [[nodiscard]] decltype(st_shndx) related_section_idx() const {
                 return st_shndx;
             }
 
+            static Symbol32 global_stub(Symbol32 const& local_symbol, Elf32_Word thunkin_section_idx);
+
+            static Symbol32 local_stub(Symbol32 const& global_symbol, Elf32_Word thunkout_section_idx);
+
+            static Symbol32 for_section(Section32 const& section, Elf32_Word section_idx);
+
             void write_out(std::ofstream& elf_file, size_t& i) const;
+        };
+
+        struct ThunkPreRel32 {
+            bool local_symbol;
+            Elf32_Addr offset;
+            Elf32_Sword addend;
+        };
+
+        struct Thunk {
+            std::vector<uint8_t> stub;
+            std::vector<Rel32> relocations;
+        };
+
+        struct Thunkin final : public Thunk {
+            explicit Thunkin(func_spec::Function const& func_spec, size_t thunk_symbol_idx, size_t local_symbol_idx);
+            void lay_to_sections(Section32Thunkin& thunkin_section, Section32Rel& rel_thunkin_section);
+        };
+
+        struct Thunkout final : public Thunk {
+            explicit Thunkout(func_spec::Function const& func_spec);
         };
 
         struct Section32 {
@@ -266,7 +307,7 @@ namespace converter {
         };
 
         struct Section32Symtab final : public Section32 {
-            std::vector<Symbol32> symbols;
+            std::deque<Symbol32> symbols;
 
             ~Section32Symtab() override = default;
             Section32Symtab(Section32Symtab&& section) = default;
@@ -276,6 +317,10 @@ namespace converter {
             [[nodiscard]] decltype(header.sh_link) strtab() const {
                 return header.sh_link;
             }
+
+            Elf32_Word add_symbol(Symbol32 symbol);
+
+            Elf32_Word register_section(Section32 const& section, Elf32_Word section_idx);
 
             [[nodiscard]] std::string to_string() const override {
                 return "Section32Symtab";
@@ -314,6 +359,12 @@ namespace converter {
             }
 
             explicit Section32Rel(Section32Rela const& rela32, sections32_t& sections);
+        private:
+            explicit Section32Rel(Elf32_Shdr const& header) : Section32{header} {}
+        public:
+
+            static Section32Rel make_for_thunk(const Section32Thunk& thunk_section, Elf32_Word thunk_section_idx,
+                                               Section32Strtab& strtab, Elf32_Word symtab_idx);
 
             void write_out_data(std::ofstream& elf_file, size_t& offset) override;
 
@@ -325,10 +376,17 @@ namespace converter {
          * */
 
         struct Section32Thunk : public Section32WithGrowableData {
+            ~Section32Thunk() override = default;
+            Section32Thunk(Section32Thunk&& section) = default;
         private:
-            explicit Section32Thunk(Elf32_Shdr const& header) : Section32WithGrowableData{header} {}
+            explicit Section32Thunk(Elf32_Shdr const& header, size_t const associated_symtab)
+                : Section32WithGrowableData{header}, associated_symtab{associated_symtab} {}
         public:
-            static Section32Thunk make_thunk(Section32 const& thunked_section, Section32Strtab& strtab, std::string const& name) {
+            size_t const associated_symtab;
+            std::optional<size_t> associated_symbol;
+
+            static Section32Thunk make_thunk(Section32 const& thunked_section, size_t const symtab_idx,
+                                             Section32Strtab& strtab, std::string const& name) {
                 std::string thunk_section_name{strtab.name_of(thunked_section.header.sh_name)};
                 thunk_section_name += name;
                 Elf32_Word name_idx = strtab.append_name(thunk_section_name);
@@ -346,26 +404,30 @@ namespace converter {
                         .sh_entsize = 0
                 };
 
-                return Section32Thunk{header};
+                return Section32Thunk{header, symtab_idx};
             }
         };
 
         struct Section32Thunkin final : public Section32Thunk {
-            explicit Section32Thunkin(Section32 const& thunked_section, Section32Strtab& strtab)
-                : Section32Thunk{make_thunk(thunked_section, strtab, ".thunkin")} {}
+            ~Section32Thunkin() override = default;
+            Section32Thunkin(Section32Thunkin&& section) = default;
+            explicit Section32Thunkin(Section32 const& thunked_section, size_t const symtab_idx, Section32Strtab& strtab)
+                : Section32Thunk{make_thunk(thunked_section, symtab_idx, strtab, ".thunkin")} {}
 
-            [[nodiscard]] size_t add_thunkin();
+            [[nodiscard]] size_t add_thunkin(std::vector<uint8_t> stub);
         };
 
         struct Section32Thunkout final : public Section32Thunk {
-            explicit Section32Thunkout(Section32 const& thunked_section, Section32Strtab& strtab)
-            : Section32Thunk{make_thunk(thunked_section, strtab, ".thunkout")} {}
+            ~Section32Thunkout() override = default;
+            Section32Thunkout(Section32Thunkout&& section) = default;
+            explicit Section32Thunkout(Section32 const& thunked_section, size_t const symtab_idx, Section32Strtab& strtab)
+            : Section32Thunk{make_thunk(thunked_section, symtab_idx, strtab, ".thunkout")} {}
         };
 
         struct Elf32 {
             Header32 header;
             sections32_t sections;
-            Section32Strtab*const strtab;
+            Section32Strtab*const shstrtab;
 
             explicit Elf32(elf64::Elf64 const& elf64, func_spec::Functions const& functions);
 

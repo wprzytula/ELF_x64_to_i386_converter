@@ -161,6 +161,14 @@ fun_addr_32to64:
             /* 40 */   0x5f, 0xc3, 0x00, 0x00, 0x00, 0x00, 0x23, 0x00, // 42: R_X86_64_32       .text+0x3c
             /* 48 */   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x33, 0x00, // 4a: R_X86_64_32       .text+0xb
             /* 50 */   0x00, 0x00 };
+
+        std::vector<elf32::ThunkPreRel32> relocations {
+                {.local_symbol=false, .offset=0x7,   .addend=0x4a},
+                {.local_symbol=true,  .offset=0x2a,  .addend=-0x4},
+                {.local_symbol=false, .offset=0x38,  .addend=0x42},
+                {.local_symbol=false, .offset=0x42,  .addend=0x3c},
+                {.local_symbol=false, .offset=0x4a,  .addend=0xb },
+        };
     }
 
     namespace elf64 {
@@ -223,8 +231,6 @@ fun_addr_32to64:
             read_to_field(elf_stream, st_value);
             read_to_field(elf_stream, st_size);
             special_section = st_shndx >= 0xff00;
-
-            // TODO: should we consider SYMINFO additional table?
         }
 
         Rela64::Rela64(std::ifstream &elf_stream) : Elf64_Rela{} {
@@ -495,6 +501,19 @@ fun_addr_32to64:
             write_from_field(elf_file, *this);
         }
 
+        Rel32::Rel32(Elf32_Addr const offset, Elf32_Word const type, Elf32_Word const symbol_idx) : Elf32_Rel{} {
+            r_offset = offset;
+            r_info = ELF32_R_INFO(symbol_idx, type);
+        }
+
+        Rel32 Rel32::self_ref(Elf32_Addr const offset, Elf32_Word const self_symbol_idx) {
+            return Rel32{offset, R_386_32, self_symbol_idx};
+        }
+
+        Rel32 Rel32::local_symbol_ref(Elf32_Addr offset, Elf32_Word local_symbol_idx) {
+            return Rel32{offset, R_386_PC32, local_symbol_idx};
+        }
+
         Symbol32::Symbol32(elf64::Symbol64 const& symbol64) : Elf32_Sym{} {
             st_name = symbol64.st_name;
             st_value = symbol64.st_value;
@@ -507,6 +526,62 @@ fun_addr_32to64:
         void Symbol32::write_out(std::ofstream& elf_file, size_t& offset) const {
             static_assert(sizeof(*this) == sizeof(Elf32_Sym));
             write_from_field(elf_file, *this);
+        }
+
+        Symbol32::Symbol32(Symbol32 const& symbol, bool const global, Elf32_Word const thunk_section_idx) : Elf32_Sym{} {
+            st_name = symbol.st_name;
+            st_value = symbol.st_value;
+            st_size = 0; // for now; TODO: remember to set to finally -> done
+            st_shndx = thunk_section_idx;
+            st_other = st_other;
+            Elf32_Word const type = STT_FUNC;
+            Elf32_Word const binding = global
+                    ? STB_GLOBAL // global stub for local 64-bit function
+                    : STB_LOCAL;  // local stub for external 32-bit function
+            st_info = ELF32_ST_INFO(binding, type);
+        }
+
+        Symbol32 Symbol32::global_stub(Symbol32 const& local_symbol, Elf32_Word thunkin_section_idx) {
+            return Symbol32{local_symbol, true, thunkin_section_idx};
+        }
+
+        Symbol32 Symbol32::local_stub(Symbol32 const& global_symbol, Elf32_Word thunkout_section_idx) {
+            return Symbol32{global_symbol, false, thunkout_section_idx};
+        }
+
+        Symbol32::Symbol32(Section32 const& section, Elf32_Word const section_idx, Elf32_Word const section_name_idx)
+                : Elf32_Sym{} {
+            st_name = section_name_idx;
+            st_value = 0;
+            st_size = 0;
+            st_shndx = section_idx;
+            st_other = st_other;
+            st_info = ELF32_ST_INFO(STB_LOCAL, STT_SECTION);
+        }
+
+        Symbol32 Symbol32::for_section(Section32 const& section, Elf32_Word const section_idx) {
+            return Symbol32{section, section_idx, 0};
+        }
+
+        Thunkin::Thunkin(func_spec::Function const& func_spec, size_t const thunk_symbol_idx, size_t const local_symbol_idx) {
+            for (uint8_t const byte: stubs::thunkin_code) {
+                stub.push_back(byte);
+            }
+            for (auto const pre_rel32 : stubs::relocations) {
+                Rel32 rel = pre_rel32.local_symbol
+                            ? Rel32::local_symbol_ref(pre_rel32.offset, local_symbol_idx)
+                            : Rel32::self_ref(pre_rel32.offset, thunk_symbol_idx);
+                *reinterpret_cast<Elf32_Word*>(stub.data() + rel.r_offset) = pre_rel32.addend;
+                relocations.push_back(rel);
+            }
+        }
+
+        void Thunkin::lay_to_sections(Section32Thunkin& thunkin_section, Section32Rel& rel_thunkin_section) {
+            auto thunk_pos = thunkin_section.add_thunkin(std::move(stub));
+            for (auto& rel: relocations) {
+                rel.r_offset += thunk_pos;
+                rel_thunkin_section.relocations.push_back(rel);
+            }
         }
 
         Section32::Section32(elf64::Section64 const &section64) {
@@ -592,7 +667,6 @@ fun_addr_32to64:
         void Section32WithFixedSizeData::write_out_data(std::ofstream& elf_file, size_t& offset) {
             Section32::write_out_data(elf_file, offset);
             elf_file.write(data.get(), static_cast<ssize_t>(size()));
-//            printf("GenericData offset=%lx\n", offset);
         }
 
         size_t Section32WithFixedSizeData::size() {
@@ -646,6 +720,17 @@ fun_addr_32to64:
             return header.sh_size;
         }
 
+        Elf32_Word Section32Symtab::add_symbol(Symbol32 const symbol) {
+            auto pos = symbols.size();
+            symbols.push_back(symbol);
+            return pos;
+        }
+
+        Elf32_Word Section32Symtab::register_section(Section32 const& section, Elf32_Word section_idx) {
+            // TODO: add name to shstrtab -> done
+            return add_symbol(Symbol32::for_section(section, section_idx));
+        }
+
         Section32Rela::Section32Rela(elf64::Section64Rela const& rela64) : Section32{rela64} {
             for (auto const& relocation: rela64.relocations) {
                 relocations.emplace_back(relocation);
@@ -687,11 +772,31 @@ fun_addr_32to64:
             return header.sh_size;
         }
 
-        size_t Section32Thunkin::add_thunkin() {
+        Section32Rel Section32Rel::make_for_thunk(const Section32Thunk& thunk_section, Elf32_Word const thunk_section_idx,
+                                                  Section32Strtab& strtab, Elf32_Word const symtab_idx) {
+            std::string rel_section_name{".rel"};
+            rel_section_name += strtab.name_of(thunk_section.header.sh_name);
+            Elf32_Word name_idx = strtab.append_name(rel_section_name);
+
+            Elf32_Shdr header{
+                    .sh_name = name_idx,
+                    .sh_type = SHT_REL,
+                    .sh_flags = 0,
+                    .sh_addr = 0,
+                    .sh_offset = 0, // so far
+                    .sh_size = 0, // so far
+                    .sh_link = thunk_section_idx,
+                    .sh_info = symtab_idx,
+                    .sh_addralign = 1,
+                    .sh_entsize = 0
+            };
+
+            return Section32Rel{header};
+        }
+
+        size_t Section32Thunkin::add_thunkin(std::vector<uint8_t> stub) {
             auto const pos = data.size();
-            for (auto byte: stubs::thunkin_code) {
-                data.push_back(byte);
-            }
+            data = std::move(stub);
             return pos;
         }
 
@@ -730,7 +835,7 @@ fun_addr_32to64:
                   }
                   return _sections;
               }()},
-              strtab{[](Section32* section){
+              shstrtab{[](Section32* section){
                   std::cout << section->type() << '\n';
                   auto _strtab = dynamic_cast<Section32Strtab*>(section);
                   if (_strtab == nullptr) {
@@ -774,17 +879,20 @@ fun_addr_32to64:
         }
 
         void Elf32::convert_symbols(func_spec::Functions const& functions) {
-            std::vector<std::optional<size_t>> thunkin_section_idcs{sections.size()};
-            std::vector<std::optional<size_t>> thunkout_section_idcs{sections.size()};
+            std::vector<std::optional<std::pair<size_t, size_t>>> thunkin_section_idcs{sections.size()};
+            std::vector<std::optional<std::pair<size_t, size_t>>> thunkout_section_idcs{sections.size()};
 
             try {
-                for (std::unique_ptr<Section32> const& section: sections) {
-                    auto* cast_section = dynamic_cast<Section32Symtab*>(section.get());
-                    if (cast_section != nullptr) { // found SYMTAB
-                        for (auto& symbol: cast_section->symbols) {
+                Elf32_Word symtab_idx = 0;
+                for (std::unique_ptr<Section32> const& section: sections) { // looking for symtabs
+                    auto* symtab = dynamic_cast<Section32Symtab*>(section.get());
+                    if (symtab != nullptr) { // found SYMTAB
+                        for (auto& symbol: symtab->symbols) {
+
                             auto bind = ELF32_ST_BIND(symbol.st_info);
                             auto type = ELF32_ST_TYPE(symbol.st_info);
-                            auto name = dynamic_cast<Section32Strtab&>(*sections[cast_section->strtab()]).name_of(symbol.st_name);
+                            auto& symstrtab = dynamic_cast<Section32Strtab&>(*sections[symtab->strtab()]);
+                            auto name = symstrtab.name_of(symbol.st_name);
 
                             if (bind == STB_GLOBAL && type == STT_FUNC) {
                                 // Case 1.
@@ -796,22 +904,52 @@ fun_addr_32to64:
                                 }
                                 auto const& func_spec = *functions.find(name);
 
-                                // - create thunkin section if not exist
-                                if (!thunkin_section_idcs[symbol.related_section()].has_value()) {
-                                    thunkin_section_idcs[symbol.related_section()] = std::make_optional<>(sections.size());
-                                    sections.emplace_back(new Section32Thunkin(*section, *strtab));
+                                size_t thunkin_section_idx;
+                                // - create thunkin section if not exist, as well as corresponding rel.thunkin
+                                if (!thunkin_section_idcs[symbol.related_section_idx()].has_value()) {
+                                    thunkin_section_idx = sections.size();
+                                    Elf32_Word rel_thunkin_section_idx = thunkin_section_idx + 1;
+
+                                    thunkin_section_idcs[symbol.related_section_idx()] = std::make_optional<>(
+                                            std::make_pair(thunkin_section_idx, rel_thunkin_section_idx));
+
+                                    auto thunkin_section = std::make_unique<Section32Thunkin>(*section, symtab_idx, *shstrtab);
+
+                                    // TODO: register new section symbols! -> done
+                                    auto thunkin_section_name_idx = symstrtab.append_name(name + std::string{".thunkin"});
+                                    auto section_symbol_idx = symtab->register_section(*thunkin_section, thunkin_section_idx);
+                                    thunkin_section->associated_symbol = section_symbol_idx;
+
+                                    sections.push_back(std::move(thunkin_section));
+
+                                    auto rel_thunkin_section = std::make_unique<Section32Rel>(Section32Rel::make_for_thunk(
+                                            dynamic_cast<Section32Thunk&>(*sections[thunkin_section_idx]),
+                                            thunkin_section_idx, *shstrtab, symtab_idx)
+                                    );
+
+                                    sections.push_back(std::move(rel_thunkin_section));
                                 }
 
-                                // - add new global symbols: trampolines that change mode from 32-bit to 64-bit,
-                                //   call original function and change mode back to 32-bit.
-                                auto& thunkin_section = dynamic_cast<Section32Thunkin&>(
-                                        *sections[*thunkin_section_idcs[symbol.related_section()]]);
+                                /* - add new global symbols: trampolines that change mode from 32-bit to 64-bit,
+                                 *   call original function and change mode back to 32-bit. */
 
-                                size_t const thunkin_base = thunkin_section.add_thunkin();
+                                // add global symbol
+                                auto local_symbol_idx = symtab->add_symbol(Symbol32::global_stub(symbol, thunkin_section_idx));
+
+                                // just get references to thunk & thunk rel sections
+                                auto& thunkin_section = dynamic_cast<Section32Thunkin&>(
+                                        *sections[thunkin_section_idcs[symbol.related_section_idx()]->first]);
+                                auto& rel_thunkin_section = dynamic_cast<Section32Rel&>(
+                                        *sections[thunkin_section_idcs[symbol.related_section_idx()]->second]);
+
+                                // build thunkin
+                                Thunkin thunkin{func_spec, thunkin_section.associated_symbol.value(), local_symbol_idx};
 
                                 // - add new relocations that point from stubs to original symbols (e.g. thunk -> f)
+                                // lay thunk to sections
+                                thunkin.lay_to_sections(thunkin_section, rel_thunkin_section);
 
-
+                                /* Case 1: DONE? */
 
                             } else if (bind == STB_GLOBAL && type == STT_NOTYPE && functions.find(name) != functions.end()) {
                                 // Case 2.
@@ -835,10 +973,24 @@ fun_addr_32to64:
                                   << '\n';*/
                         }
                     }
+                    ++symtab_idx;
+                }
+                auto correct_symbol_size = [&sections=sections](std::optional<std::pair<size_t, size_t>> const idx_pair){
+                    if (idx_pair.has_value()) {
+                        auto& thunk_section = dynamic_cast<Section32Thunk&>(*sections[idx_pair->first]);
+                        auto &symtab = dynamic_cast<Section32Symtab&>(*sections[thunk_section.associated_symtab]);
+                        symtab.symbols[thunk_section.associated_symbol.value()].st_size = thunk_section.size();
+                    }
+                };
+                for (auto idx_pair: thunkin_section_idcs) {
+                    correct_symbol_size(idx_pair);
+                }
+                for (auto idx_pair: thunkout_section_idcs) {
+                    correct_symbol_size(idx_pair);
                 }
 
             } catch (std::bad_cast const&) {
-                throw UnsupportedFileContent{"Bad symbol name strtab index."};
+                throw UnsupportedFileContent{"Bad symbol name shstrtab index."};
             }
 
             /* - 1st case: calling our (64-bit) functions from outside (32-bit):
@@ -864,7 +1016,6 @@ fun_addr_32to64:
 
         void Elf32::correct_offsets() {
 /* *
- * TODO
  * 1) ELF header:
  *     - shoff
  * 2) Sections:
@@ -879,6 +1030,7 @@ fun_addr_32to64:
             size_t i = 0;
             for (auto const& section: sections) {
                 // alignment check
+                section->size();
                 section->align_offset(offset);
 //                printf("Section %lu: aligned offset to %lu, requested %u\n", i++, offset, section->header.sh_addralign);
 
@@ -892,7 +1044,7 @@ fun_addr_32to64:
             }
 
             // section headers alignment
-            align_offset_to(offset, 8);
+                align_offset_to(offset, 8);
 
             // set section headers offset
             header.e_shoff = offset;
