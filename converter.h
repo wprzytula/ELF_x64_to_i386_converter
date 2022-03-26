@@ -287,6 +287,8 @@ namespace converter {
             explicit Section32WithGrowableData(elf64::Section64WithGenericData const& section64);
 
             [[nodiscard]] size_t size() override;
+
+            void write_out_data(std::ofstream& elf_file, size_t& offset) override;
         };
 
         struct Section32Strtab final : public Section32WithGrowableData {
@@ -430,6 +432,8 @@ namespace converter {
             Section32Strtab*const shstrtab;
 
             explicit Elf32(elf64::Elf64 const& elf64, func_spec::Functions const& functions);
+
+            void add_new_section(std::unique_ptr<Section32> section);
 
             void convert_relocations();
 
