@@ -9,48 +9,42 @@
 
 namespace converter::assembly {
     namespace {
-        char const* LOCK_PREFIX = "lock_";
-        char const* CODE_PREFIX = "code_";
-
         char const* AS = "as";
         char const* OBJCOPY = "objcopy";
+        char const* CODE_PREFIX = "code_";
+    }
 
-        class Tempfile {
-            std::string lock_name{LOCK_PREFIX};
-            size_t _file_num;
-        public:
-            explicit Tempfile() {
-                for (size_t i = 0;; ++i) {
-                    lock_name.append(std::to_string(i));
-//                    if (access(lock_name.c_str(), F_OK) == 0) { // file already exists
-//                        lock_name = LOCK_PREFIX;
-//                        continue;
-//                    }
-                    int filedes;
-                    filedes = open(lock_name.c_str(), O_WRONLY | O_CREAT | O_EXCL);
-                    if (filedes == -1) {
-                        if (errno == EEXIST) {
-                            lock_name = LOCK_PREFIX;
-                            continue;
-                        } else {
-                            syserr("Error in open()");
-                        }
-                    }
-                    close(filedes);
-                    _file_num = i;
-                    return;
+    Tempfile::Tempfile() {
+        for (size_t i = 0;; ++i) {
+            lock_name.append(std::to_string(i));
+//            if (access(lock_name.c_str(), F_OK) == 0) { // file already exists
+//                lock_name = LOCK_PREFIX;
+//                continue;
+//            }
+            int filedes;
+            filedes = open(lock_name.c_str(), O_WRONLY | O_CREAT | O_EXCL);
+            if (filedes == -1) {
+                if (errno == EEXIST) {
+                    lock_name = LOCK_PREFIX;
+                    continue;
+                } else {
+                    syserr("Error in open()");
                 }
             }
-            ~Tempfile() {
-                if (unlink(lock_name.c_str()) == -1) {
-                    syserr("unlink");
-                }
-            }
+            close(filedes);
+            _file_num = i;
+            printf("Created Tempfile with name %s\n", lock_name.c_str());
+            return;
+        }
+    }
 
-            [[nodiscard]] size_t file_num() const {
-                return _file_num;
-            }
-        };
+    Tempfile::~Tempfile() {
+        if (lock_name.empty())
+            return; // the object was likely moved
+        printf("Trying to unlink Tempfile with num %lu, name %s\n", _file_num, lock_name.c_str());
+        if (unlink(lock_name.c_str()) == -1) {
+            syserr("unlink");
+        }
     }
 
     void rid_gnu_property(std::string const& codefile, std::string const& outfile) {
@@ -67,10 +61,9 @@ namespace converter::assembly {
             syserr("Error in wait");
     }
 
-    std::string assemble(std::string const& asm_code) {
-
+    std::pair<Tempfile, std::string> assemble_to_file(std::string const& asm_code, bool binary_text_only) {
         // create tempfile for as -> objcopy -> converter communication
-        Tempfile const codefile_lock;
+        Tempfile codefile_lock;
 
         std::string const codefile{CODE_PREFIX + std::to_string(codefile_lock.file_num())};
 
@@ -108,17 +101,25 @@ namespace converter::assembly {
         if (wait(nullptr) == -1)
             syserr("Error in wait");
 
-        // fork OBJCOPY process
-        switch (fork()) {
-            case 0: // child
-                execlp(OBJCOPY, OBJCOPY, "-j", ".text", "-O", "binary", codefile.c_str()/*, codefile_lock.name().c_str()*/, nullptr);
-                syserr("exec() failed");
-            default: // parent
-                break;
+        if (binary_text_only) {
+            // fork OBJCOPY process
+            switch (fork()) {
+                case 0: // child
+                    execlp(OBJCOPY, OBJCOPY, "-j", ".text", "-O", "binary", codefile.c_str()/*, codefile_lock.name().c_str()*/, nullptr);
+                    syserr("exec() failed");
+                default: // parent
+                    break;
+            }
+
+            if (wait(nullptr) == -1)
+                syserr("Error in wait");
         }
 
-        if (wait(nullptr) == -1)
-            syserr("Error in wait");
+        return std::pair<Tempfile, std::string>{std::move(codefile_lock), codefile};
+    }
+
+    std::string assemble(std::string const& asm_code, bool binary_text_only) {
+        auto [codefile_lock, codefile] = assemble_to_file(asm_code, binary_text_only);
 
         std::ifstream rx{codefile.c_str(), std::ios_base::binary | std::ios_base::in};
         std::istreambuf_iterator<char> eos;

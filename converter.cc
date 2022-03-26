@@ -18,6 +18,9 @@
 //constexpr char const* elf_copy_name = "/home/xps15/Studia/Sem6/ZSO/Laby/Zad1_ELF_converter/tests/no_i386_copy.o";
 constexpr char const* func_file_name = "/home/xps15/Studia/Sem6/ZSO/Laby/Zad1_ELF_converter/tests/example/test.flist";
 
+#define read_to_field(ifstream, field) ifstream.read(reinterpret_cast<char*>(&(field)), sizeof(field))
+#define write_from_field(elf_stream, field) elf_stream.write(reinterpret_cast<char const*>(&(field)), sizeof(field))
+
 namespace converter {
     class UnsupportedFileContent : public std::invalid_argument {
     public:
@@ -100,47 +103,50 @@ namespace converter {
 
     namespace stubs {
         std::string const thunkin = R"(
-# long long fun(void *ptr, int x, long long y)
+;# long long fun(void *ptr, int x, long long y)
 
 .code32
 fun_stub:
-# zapis rejestrów
-pushl %edi
-pushl %esi
-# wyrównanie stosu
-subl $4, %esp
-# zmiana trybu
-ljmpl *fun_addr_32to64
+;# zapis rejestrów
+    pushl   %edi
+    pushl   %esi
+;# wyrównanie stosu
+    subl    $4, %esp
+;# zmiana trybu
+    ljmpl   *fun_addr_32to64
 
-# część 64-bitowa
+;# część 64-bitowa
 .code64
 fun_stub_64:
-# bierzemy argumenty ze stosu
-movl 0x10(%rsp), %edi
-movslq 0x14(%rsp), %rsi
-movq 0x18(%rsp), $rdx
-# wołamy właściwą funkcję
-call fun
-# konwersja wartości zwracanej
-movq %rax, %rdx
-shrq $32, %rdx
-# powrót
-ljmpl *fun_addr_64to32
+;# bierzemy argumenty ze stosu
+    movslq  0x10(%rsp), %rdi ;# TODO: movs or movz according to signedness
+    movslq  0x14(%rsp), %rsi
+    movslq  0x18(%rsp), %rdx
+    movslq  0x1c(%rsp), %rcx
+    movslq  0x20(%rsp), %r8
+    movslq  0x24(%rsp), %r9
+;# wołamy właściwą funkcję
+    call    fun
+;# konwersja wartości zwracanej
+    movq    %rax, %rdx
+    shrq    $32, %rdx
+;# powrót
+    ljmpl   *fun_addr_64to32
 
 .code32
 fun_stub_32:
-addl $4, %esp
-popl %esi
-popl %edi
-retl
+    addl    $4, %esp
+    popl    %esi
+    popl    %edi
+    retl
 
 fun_addr_64to32:
-.long fun_stub_32
-.long 0x23
+    .long fun_stub_32
+    .long 0x23
 
 fun_addr_32to64:
-.long fun_stub_64
-.long 0x33
+    .long fun_stub_64
+    .long 0x33
 )";
         /* *
          * 00000000  57 56 83 ec 04 ff 2d 00  00 00 00 48 63 7c 24 10
@@ -163,18 +169,73 @@ fun_addr_32to64:
             /* 48 */   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x33, 0x00, // 4a: R_X86_64_32       .text+0xb
             /* 50 */   0x00, 0x00 };
 
-        std::vector<elf32::ThunkPreRel32> relocations {
+        ThunkPreRel32::ThunkPreRel32(Elf64_Rela const& rela64) {
+            auto type = ELF64_R_TYPE(rela64.r_info);
+            local_symbol = type == R_X86_64_PLT32 || type == R_X86_64_PC32;
+            addend = static_cast<decltype(addend)>(rela64.r_addend);
+            offset = static_cast<decltype(offset)>(rela64.r_offset);
+        }
+
+        /*std::vector<ThunkPreRel32> relocations {
                 {.local_symbol=false, .offset=0x7,   .addend=0x4a},
                 {.local_symbol=true,  .offset=0x2a,  .addend=-0x4},
                 {.local_symbol=false, .offset=0x38,  .addend=0x42},
                 {.local_symbol=false, .offset=0x42,  .addend=0x3c},
                 {.local_symbol=false, .offset=0x4a,  .addend=0xb },
-        };
+        };*/
+
+        Stub::Stub(std::ifstream& stub_elf) {
+            Elf64_Ehdr header;
+            read_to_field(stub_elf, header);
+
+            std::optional<elf64::Section64WithGenericData> text;
+            std::optional<elf64::Section64Rela> rela;
+            Elf64_Shdr section_header;
+
+            for (size_t i = 0; i < header.e_shnum; ++i) {
+                stub_elf.seekg(static_cast<ssize_t>(header.e_shoff + i * header.e_shentsize));
+
+                read_to_field(stub_elf, section_header);
+                if (section_header.sh_type == SHT_PROGBITS && section_header.sh_flags == (SHF_ALLOC | SHF_EXECINSTR)) {
+                    // found .text
+                    elf64::Section64 section64{stub_elf};
+                    text.emplace(std::move(section64), stub_elf);
+
+                    code.resize(text->header.sh_size);
+                    std::copy(text->data.get(), text->data.get() + text->header.sh_size, code.data());
+
+                } else if (section_header.sh_type == SHT_RELA) {
+                    // found .rela.text
+                    elf64::Section64 section64{stub_elf};
+                    rela.emplace(std::move(section64), stub_elf);
+
+                    for (elf64::Rela64 const& rela64: rela->relocations) {
+                        relocations.emplace_back(rela64);
+                    }
+                }
+
+                if (text.has_value() && rela.has_value()) {
+                    return;
+                }
+            }
+            throw UnsupportedFileContent{"Section .text or .rela.text not found in created code file."};
+        }
+
+        Stub Stub::from_assembly(std::string const& assembly_code) {
+            auto [stubelf_lock_guard, stubelf_name] = assembly::assemble_to_file(assembly_code);
+            std::ifstream stubelf_stream{stubelf_name};
+            stubelf_stream.exceptions(std::ifstream::badbit);
+
+            return Stub{stubelf_stream};
+        }
+
+        Stub Stub::stubin(func_spec::Function const& func_spec) {
+            auto& assembly_code = thunkin;
+            return from_assembly(assembly_code);
+        }
     }
 
     namespace elf64 {
-#define read_to_field(elf_stream, field) elf_stream.read(reinterpret_cast<char*>(&(field)), sizeof(field))
-
         Header64::Header64(std::ifstream &elf_stream) : Elf64_Ehdr{} {
             read_to_field(elf_stream, e_ident);
             if (strncmp(reinterpret_cast<char const *>(e_ident), ELFMAG, SELFMAG) != 0 ||
@@ -393,7 +454,6 @@ fun_addr_32to64:
             }
         }
 
-# undef read_to_field
     }
 
     namespace elf32 {
@@ -414,7 +474,6 @@ fun_addr_32to64:
             }
         }
 
-#define write_from_field(elf_stream, field) elf_stream.write(reinterpret_cast<char const*>(&(field)), sizeof(field))
         Header32::Header32(elf64::Header64 const& header64) : Elf32_Ehdr{} {
             std::copy(std::begin(header64.e_ident), std::end(header64.e_ident), std::begin(e_ident));
             e_ident[EI_CLASS] = ELFCLASS32;
@@ -435,7 +494,6 @@ fun_addr_32to64:
 
         void Header32::write_out(std::ofstream& elf_stream, size_t& offset) const {
             static_assert(sizeof(*this) == sizeof(Elf32_Ehdr));
-//            printf("e_shoff: %x\n", e_shoff);
             write_from_field(elf_stream, *this);
             offset += size();
         }
@@ -536,8 +594,8 @@ fun_addr_32to64:
             st_other = st_other;
             Elf32_Word const type = STT_FUNC;
             Elf32_Word const binding = global
-                    ? STB_GLOBAL // global stub for local 64-bit function
-                    : STB_LOCAL;  // local stub for external 32-bit function
+                    ? STB_GLOBAL // global code for local 64-bit function
+                    : STB_LOCAL;  // local code for external 32-bit function
             st_info = ELF32_ST_INFO(binding, type);
         }
 
@@ -564,20 +622,21 @@ fun_addr_32to64:
         }
 
         Thunkin::Thunkin(func_spec::Function const& func_spec, size_t const thunk_symbol_idx, size_t const local_symbol_idx) {
-            for (uint8_t const byte: stubs::thunkin_code) {
-                stub.push_back(byte);
-            }
-            for (auto const pre_rel32 : stubs::relocations) {
+            using stubs::Stub;
+            Stub stub = Stub::stubin(func_spec);
+            code = std::move(stub.code);
+
+            for (auto const pre_rel32 : stub.relocations) {
                 Rel32 rel = pre_rel32.local_symbol
                             ? Rel32::local_symbol_ref(pre_rel32.offset, local_symbol_idx)
                             : Rel32::self_ref(pre_rel32.offset, thunk_symbol_idx);
-                *reinterpret_cast<Elf32_Word*>(stub.data() + rel.r_offset) = pre_rel32.addend;
+                *reinterpret_cast<Elf32_Word*>(code.data() + rel.r_offset) = pre_rel32.addend;
                 relocations.push_back(rel);
             }
         }
 
         void Thunkin::lay_to_sections(Section32Thunkin& thunkin_section, Section32Rel& rel_thunkin_section) {
-            auto thunk_pos = thunkin_section.add_thunkin(std::move(stub));
+            auto thunk_pos = thunkin_section.add_thunkin(std::move(code));
             for (auto& rel: relocations) {
                 rel.r_offset += thunk_pos;
                 rel_thunkin_section.relocations.push_back(rel);
@@ -904,10 +963,11 @@ fun_addr_32to64:
                 for (Elf32_Word symtab_idx = 0; symtab_idx < sections.size(); ++symtab_idx) { // looking for symtabs
                     std::unique_ptr<Section32> const& section = sections[symtab_idx];
                     auto* symtab = dynamic_cast<Section32Symtab*>(section.get());
+
                     if (symtab != nullptr) { // found SYMTAB
                         symbols_to_be_sized[symtab_idx] = {};
                         auto symbols_size_before_conversion = symtab->symbols.size();
-//                        for (auto& symbol: symtab->symbols) {
+
                         for (Elf32_Word symbol_idx = 0; symbol_idx < symbols_size_before_conversion; ++symbol_idx) {
                             Symbol32& symbol = symtab->symbols[symbol_idx];
                             auto bind = ELF32_ST_BIND(symbol.st_info);
@@ -932,6 +992,7 @@ fun_addr_32to64:
                                 // - create thunkin section if not exist, as well as corresponding rel.thunkin
                                 size_t thunkin_section_idx;
                                 if (!thunkin_section_idcs[symbol.related_section_idx()].has_value()) {
+
                                     thunkin_section_idx = sections.size();
                                     Elf32_Word rel_thunkin_section_idx = thunkin_section_idx + 1;
 
@@ -940,10 +1001,8 @@ fun_addr_32to64:
 
                                     auto thunkin_section = std::make_unique<Section32Thunkin>(thunked_section, symtab_idx, *shstrtab);
 
-                                    // TODO: register new section symbols! -> done
                                     auto thunkin_section_name_idx = symstrtab.append_name(name + std::string{".thunkin"});
                                     auto section_symbol_idx = symtab->register_section(*thunkin_section, thunkin_section_idx);
-                                    thunkin_section->associated_symbol = section_symbol_idx;
 
                                     add_new_section(std::move(thunkin_section));
 
@@ -1112,20 +1171,6 @@ fun_addr_32to64:
             }
         }
     }
-#undef write_from_field
-}
-
-int main4() {
-    std::ifstream func_stream;
-    func_stream.exceptions(/*std::ifstream::eofbit | *//*std::ifstream::failbit | */std::ifstream::badbit);
-    func_stream.open(func_file_name, std::ifstream::in);
-
-    converter::func_spec::Functions functions{func_stream};
-    functions.print_one("f");
-    functions.print();
-
-    func_stream.close();
-    return 0;
 }
 
 int main(int argc, char const* argv[]) {
@@ -1136,36 +1181,22 @@ int main(int argc, char const* argv[]) {
 
     char const* elf64_file_name = argv[1];
     char const* functions_file_name = argv[2];
-    char const* elf32_file_name = argv[3];
+    char const* output_file_name = argv[3];
 
     std::ifstream func_stream;
     func_stream.exceptions(std::ifstream::badbit);
     func_stream.open(functions_file_name, std::ifstream::in);
-
-//    std::ifstream elf_istream;
-//    elf_istream.exceptions(std::ifstream::badbit);
-//    elf_istream.open(elf64_file_name, std::ifstream::in | std::ifstream::binary);
-//
-//    std::ofstream elf_ostream;
-//    elf_ostream.exceptions(/*std::ifstream::eofbit | *//*std::ifstream::failbit | */std::ifstream::badbit);
-//    elf_ostream.open(elf32_file_name, std::ifstream::out | std::ifstream::binary);
-
-//    std::ofstream elf_copy_stream;
-//    elf_copy_stream.open(elf_copy_name, std::ofstream::out | std::ofstream::binary);
-
-//    std::copy(std::istreambuf_iterator<char>(elf_istream), std::istreambuf_iterator<char>(),
-//              std::ostreambuf_iterator<char>(elf_copy_stream));
 
     try {
         converter::func_spec::Functions functions{func_stream};
         functions.print();
         std::cout << "\n\n#############################\n\n";
 
-        converter::assembly::rid_gnu_property(elf64_file_name, elf32_file_name);
+        converter::assembly::rid_gnu_property(elf64_file_name, output_file_name);
 
         std::ifstream elf_istream;
         elf_istream.exceptions(std::ifstream::badbit);
-        elf_istream.open(elf32_file_name, std::ifstream::in | std::ifstream::binary);
+        elf_istream.open(output_file_name, std::ifstream::in | std::ifstream::binary);
 
         converter::Elf64 elf64{elf_istream};
         elf_istream.close();
@@ -1174,7 +1205,7 @@ int main(int argc, char const* argv[]) {
 
         std::ofstream elf_ostream;
         elf_ostream.exceptions(std::ifstream::badbit);
-        elf_ostream.open(elf32_file_name, std::ifstream::out | std::ifstream::binary);
+        elf_ostream.open(output_file_name, std::ifstream::out | std::ifstream::binary);
 
         std::cout << "\nWriting ELF32 out.\n";
         elf32.write_out(elf_ostream);

@@ -112,6 +112,29 @@ namespace converter {
         };
     }
 
+    namespace stubs {
+        struct ThunkPreRel32 {
+            bool local_symbol;
+            Elf32_Addr offset;
+            Elf32_Sword addend;
+
+            explicit ThunkPreRel32(Elf64_Rela const& rela64);
+        };
+
+        struct Stub {
+            std::vector<uint8_t> code;
+            std::vector<ThunkPreRel32> relocations;
+        private:
+            explicit Stub(std::ifstream& stub_elf);
+            Stub(Stub const&) = delete;
+            Stub(Stub&&) = default;
+            static Stub from_assembly(std::string const& assembly);
+        public:
+            static Stub stubin(func_spec::Function const& func_spec);
+            static Stub stubout(func_spec::Function const& func_spec);
+        };
+    }
+
     namespace elf64 {
         struct Elf64;
         struct Header64;
@@ -190,14 +213,8 @@ namespace converter {
             void write_out(std::ofstream& elf_file, size_t& i) const;
         };
 
-        struct ThunkPreRel32 {
-            bool local_symbol;
-            Elf32_Addr offset;
-            Elf32_Sword addend;
-        };
-
         struct Thunk {
-            std::vector<uint8_t> stub;
+            std::vector<uint8_t> code;
             std::vector<Rel32> relocations;
         };
 
@@ -381,11 +398,9 @@ namespace converter {
             ~Section32Thunk() override = default;
             Section32Thunk(Section32Thunk&& section) = default;
         private:
-            explicit Section32Thunk(Elf32_Shdr const& header, size_t const associated_symtab)
-                : Section32WithGrowableData{header}, associated_symtab{associated_symtab} {}
+            explicit Section32Thunk(Elf32_Shdr const& header)
+                : Section32WithGrowableData{header} {}
         public:
-            size_t const associated_symtab;
-            std::optional<size_t> associated_symbol;
 
             static Section32Thunk make_thunk(Section32 const& thunked_section, size_t const symtab_idx,
                                              Section32Strtab& strtab, std::string const& name) {
@@ -406,7 +421,7 @@ namespace converter {
                         .sh_entsize = 0
                 };
 
-                return Section32Thunk{header, symtab_idx};
+                return Section32Thunk{header};
             }
         };
 
