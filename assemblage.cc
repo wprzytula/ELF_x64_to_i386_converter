@@ -8,10 +8,13 @@
 #include "err.h"
 
 namespace converter::assembly {
-    static char const* LOCK_PREFIX = "lock_";
-    static char const* CODE_PREFIX = "code_";
-
     namespace {
+        char const* LOCK_PREFIX = "lock_";
+        char const* CODE_PREFIX = "code_";
+
+        char const* AS = "as";
+        char const* OBJCOPY = "objcopy";
+
         class Tempfile {
             std::string lock_name{LOCK_PREFIX};
             size_t _file_num;
@@ -50,9 +53,21 @@ namespace converter::assembly {
         };
     }
 
+    void rid_gnu_property(std::string const& codefile, std::string const& outfile) {
+        // fork OBJCOPY process
+        switch (fork()) {
+            case 0: // child
+                execlp(OBJCOPY, OBJCOPY, "--remove-section", ".note.gnu.property", codefile.c_str(), outfile.c_str(), nullptr);
+                syserr("exec() failed");
+            default: // parent
+                break;
+        }
+
+        if (wait(nullptr) == -1)
+            syserr("Error in wait");
+    }
+
     std::string assemble(std::string const& asm_code) {
-        static char const* AS = "as";
-        static char const* OBJCOPY = "objcopy";
 
         // create tempfile for as -> objcopy -> converter communication
         Tempfile const codefile_lock;
