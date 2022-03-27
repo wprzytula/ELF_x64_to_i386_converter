@@ -36,15 +36,17 @@ namespace converter {
 
             static ArgType parse_arg_type(char const* argtype);
 
-            Arg(const std::string& argtype) : type{parse_arg_type(argtype.c_str())} {}
+            Arg(const std::string& argtype) : type{parse_arg_type(argtype.c_str())} {} // NOLINT(google-explicit-constructor)
 
             [[nodiscard]] bool is_signed() const {
                 return type == int_t || type == long_t || type == longlong_t;
             }
 
-            [[nodiscard]] size_t bits_32() const;
+            [[nodiscard]] size_t bytes_32() const;
 
-            [[nodiscard]] size_t bits_64() const;
+            [[nodiscard]] size_t bytes_64() const;
+
+            [[nodiscard]] bool size_differs() const;
         };
 
         struct Ret {
@@ -139,6 +141,7 @@ namespace converter {
             explicit Stub(std::ifstream& stub_elf);
             static Stub from_assembly(std::string const& assembly);
         public:
+            static std::string asmin(func_spec::Function const& func_spec);
             static Stub stubin(func_spec::Function const& func_spec);
             static Stub stubout(func_spec::Function const& func_spec);
         };

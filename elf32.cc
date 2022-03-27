@@ -6,20 +6,23 @@
 #include <map>
 
 namespace converter::elf32 {
-    void align_offset_to(size_t& offset, size_t const alignment) {
-        auto const rem = offset % alignment;
-        assert(rem >= 0);
-        if (rem > 0) offset += alignment - rem;
-    }
-    void align_offset_to(size_t& offset, size_t const alignment, std::ofstream& elf_file) {
-        size_t const offset_before = offset;
+    namespace {
+        void align_offset_to(size_t& offset, size_t const alignment) {
+            auto const rem = offset % alignment;
+            assert(rem >= 0);
+            if (rem > 0) offset += alignment - rem;
+        }
 
-        align_offset_to(offset, alignment);
+        void align_offset_to(size_t& offset, size_t const alignment, std::ofstream& elf_file) {
+            size_t const offset_before = offset;
 
-        size_t const stuffing = offset - offset_before;
-        for (uint32_t i = 0; i < stuffing; ++i) {
-            static char zero;
-            elf_file.write(&zero, 1);
+            align_offset_to(offset, alignment);
+
+            size_t const stuffing = offset - offset_before;
+            for (uint32_t i = 0; i < stuffing; ++i) {
+                static char zero;
+                elf_file.write(&zero, 1);
+            }
         }
     }
 
@@ -513,6 +516,14 @@ namespace converter::elf32 {
             Elf32_Word symbol;
         };
 
+        Elf32_Word text_section_idx = 0;
+        for (Elf32_Word i = 0; i < sections.size(); ++i) {
+            if (sections[i]->header.sh_type == SHT_PROGBITS && sections[i]->header.sh_flags == (SHF_ALLOC | SHF_EXECINSTR)) {
+                text_section_idx = i;
+            }
+        }
+        if (text_section_idx == 0) throw UnsupportedFileContent{"No .text section!"};
+
         try {
             std::vector<std::optional<Indices>> thunkin_section_idcs{sections.size()};
             std::vector<std::optional<Indices>> thunkout_section_idcs{sections.size()};
@@ -538,11 +549,6 @@ namespace converter::elf32 {
                             std::cout << "Detected global binding function:\n\tname: " << name << "\n";
 
                             Section32& thunked_section = *sections[symbol.st_shndx];
-//                            printf("sanity check for shstrtab:\n");
-//                            for (auto c = shstrtab->data.cbegin(); c < shstrtab->data.cend(); ++c) {
-//                                putchar(*c);
-//                            }
-//                            putchar('\n');
                             auto const& thunked_section_name = shstrtab->name_of(sections[symbol.st_shndx]->header.sh_name);
                             printf("thunked sections's type: %s, name: %s\n", thunked_section.type(), thunked_section_name);
 
@@ -614,8 +620,8 @@ namespace converter::elf32 {
                                 // - add new local symbols: stubs that change mode to 32-bit,
                                 //   call global symbols and come back to 64-bit:
 
-                                Section32& thunked_section = *sections[symbol.st_shndx];
-                                auto const& thunked_section_name = shstrtab->name_of(sections[symbol.st_shndx]->header.sh_name);
+                                Section32& thunked_section = *sections[text_section_idx];
+                                auto const& thunked_section_name = shstrtab->name_of(sections[text_section_idx]->header.sh_name);
 
                                 // - create thunkout section if not exist, as well as corresponding rel.thunkout
                                 Elf32_Word thunkout_section_idx;
@@ -673,25 +679,6 @@ namespace converter::elf32 {
                     symbol.st_size = sized_section.size();
                 }
             }
-
-/*                auto correct_symbol_size = [&sections=sections](std::optional<std::pair<size_t, size_t>> const idx_pair){
-                    if (idx_pair.has_value()) {
-                        auto& thunk_section = dynamic_cast<Section32Thunk&>(*sections[idx_pair->first]);
-                        auto& symtab = dynamic_cast<Section32Symtab&>(*sections[thunk_section.associated_symtab]);
-                        size_t const associated_symbol_idx = thunk_section.associated_symbol.value();
-                        symtab.symbols[associated_symbol_idx].st_size = thunk_section.size();
-                        printf("Corrected %lu: <%s> symbol size to %lu\n", associated_symbol_idx,
-                               dynamic_cast<Section32Strtab const&>(*sections[symtab.strtab()]).name_of(associated_symbol_idx),
-                               thunk_section.size());
-                    }
-                };
-                for (auto idx_pair: thunkin_section_idcs) {
-                    correct_symbol_size(idx_pair);
-                }
-                for (auto idx_pair: thunkout_section_idcs) {
-                    correct_symbol_size(idx_pair);
-                }*/
-
         } catch (std::bad_cast const&) {
             throw UnsupportedFileContent{"Bad symbol name shstrtab index."};
         }
@@ -713,7 +700,6 @@ namespace converter::elf32 {
 
         /* - 3rd case: calling our functions from our functions (both 64-bit):
          * - no stubs needed */
-        // Case 3:
 
     }
 

@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <stdexcept>
+#include <sstream>
 
 namespace converter::stubs {
     std::string const thunkin = R"(
@@ -56,9 +57,10 @@ fun_addr_32to64:
 .code32
 fun_stub:
 ;# zapis rejestrów
-    {}
+    pushl   %%edi
+    pushl   %%esi
 ;# wyrównanie stosu
-    subl    $4, %esp
+    subl    $4, %%esp
 ;# zmiana trybu
     ljmpl   *fun_addr_32to64
 
@@ -66,21 +68,22 @@ fun_stub:
 .code64
 fun_stub_64:
 ;# bierzemy argumenty ze stosu
-    {}
+%s
 ;# wołamy właściwą funkcję
     call    fun
 ;# konwersja wartości zwracanej
-    movq    %rax, %rdx
-    shrq    $32, %rdx
+    movq    %%rax, %%rdx
+    shrq    $32, %%rdx
 ;# powrót
     ljmpl   *fun_addr_64to32
 
 .code32
 fun_stub_32:
 ;# cofnięcie wyrównania stosu
-    addl    $4, %esp
+    addl    $4, %%esp
 ;# zdjęcie rejestrów
-    {}
+    popl   %%edi
+    popl   %%esi
     retl
 
 fun_addr_64to32:
@@ -160,8 +163,9 @@ fun_addr_32to64:
         return {buf.get(), buf.get() + size - 1}; // We don't want the '\0' inside
     }
 
-    std::string generate_thunkin(std::string const& pushes, std::string const& takes, std::string const& pops) {
-        return string_format(thunkin_template, pushes.c_str(), takes.c_str(), pops.c_str());
+    std::string generate_thunkin(std::string const& takes) {
+        printf("Takes:\n%s\n", takes.c_str());
+        return string_format(thunkin_template, takes.c_str());
     }
 
     std::string generate_thunkout(std::string const& pushes, std::string const& pops) {
@@ -250,9 +254,44 @@ fun_addr_32to64:
         return Stub{stubelf_stream};
     }
 
+    static char const* registers64[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
+    static char const* registers32[] = {"edi", "esi", "edx", "ecx", "r8d", "r9d"};
+
+    std::string Stub::asmin(func_spec::Function const& func_spec) {
+        std::string takes;
+        auto gen_take = [](char const* instr, size_t offset, char const* reg){
+            std::stringstream take;
+            take << '\t' << instr << " 0x" << std::hex << offset << "(%rsp), %" << reg << '\n';
+            return take.str();
+        };
+
+        size_t offset = 0x10;
+
+        for (uint32_t i = 0; i < func_spec.args.size(); ++i) {
+            auto const& arg = func_spec.args[i];
+
+            char const*const reg = (arg.bytes_64() == 8 ? registers64 : registers32)[i];
+            char const* instr;
+            if (arg.size_differs()) {
+                instr = arg.is_signed()
+                        ? "movslq"
+                        : "movzlq";
+            } else {
+                instr = arg.bytes_32() == 4
+                        ? "movl"
+                        : "movq";
+            }
+
+//            printf("Generating take for: instr=%s, offset=%lu, reg=%s\n", instr, offset, reg);
+            takes += gen_take(instr, offset, reg);
+            offset += arg.bytes_32();
+        }
+
+        return generate_thunkin(takes);
+    }
+
     Stub Stub::stubin(func_spec::Function const& func_spec) {
-        auto& assembly_code = thunkin; // FIXME
-        return from_assembly(assembly_code);
+        return from_assembly(asmin(func_spec));
     }
 
     Stub Stub::stubout(func_spec::Function const& func_spec) {

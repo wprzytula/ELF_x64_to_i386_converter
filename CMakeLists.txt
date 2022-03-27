@@ -5,7 +5,14 @@ set(CMAKE_CXX_STANDARD 20)
 
 #set(CMAKE_CXX_COMPILER "/usr/bin/clang++")
 
-add_executable(converter
+set (SOURCES
         err.cc
-        converter.cc
-        assemblage.cc assemblage.h converter.h elf64.cc elf32.cc stubs.cc)
+        assemblage.cc
+        assemblage.h
+        converter.h
+        elf64.cc
+        elf32.cc
+        stubs.cc func_spec.cc)
+
+add_executable(converter ${SOURCES} converter.cc)
+add_executable(tests ${SOURCES} tests.cc)
