@@ -55,6 +55,7 @@ fun_addr_32to64:
 )";*/
     namespace {
         std::string const thunkin_template = R"(
+.section    .text
 .code32
 fun_stub:
 ;# zapis rejestrów
@@ -87,16 +88,18 @@ fun_stub_32:
     popl   %%esi
     retl
 
+.section    .rodata
 fun_addr_64to32:
-    .long fun_stub_32
-    .long 0x23
+    .long   fun_stub_32
+    .long   0x23
 
 fun_addr_32to64:
-    .long fun_stub_64
-    .long 0x33
+    .long   fun_stub_64
+    .long   0x33
 )";
 
         std::string const thunkout_template = R"(
+.section    .text
 .code64
 fun_stub:
 ;# zapis rejestrów
@@ -142,6 +145,7 @@ fun_stub_64:
     popq    %%rbx
     retq
 
+.section    .rodata
 fun_addr_64to32:
 .long      fun_stub_32
 .long      0x23
@@ -180,18 +184,18 @@ fun_addr_32to64:
          * 00000040  5f c3 00 00 00 00 23 00  00 00 00 00 00 00 33 00
          * 00000050  00 00
          * */
-        unsigned char const thunkin_code[] = {
-                /* 00 */   0x57, 0x56, 0x83, 0xec, 0x04, 0xff, 0x2d, 0x00, // 7: R_X86_64_32        .text+0x4a
-                /* 08 */   0x00, 0x00, 0x00, 0x48, 0x63, 0x7c, 0x24, 0x10,
-                /* 10 */   0x48, 0x63, 0x74, 0x24, 0x14, 0x48, 0x63, 0x54,
-                /* 18 */   0x24, 0x18, 0x48, 0x63, 0x4c, 0x24, 0x1c, 0x4c,
-                /* 20 */   0x63, 0x44, 0x24, 0x20, 0x4c, 0x63, 0x4c, 0x24,
-                /* 28 */   0x24, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x89, // 2a: R_X86_64_PLT32    fun-0x4
-                /* 30 */   0xc2, 0x48, 0xc1, 0xea, 0x20, 0xff, 0x2c, 0x25,
-                /* 38 */   0x00, 0x00, 0x00, 0x00, 0x83, 0xc4, 0x04, 0x5e, // 38: R_X86_64_32S      .text+0x42
-                /* 40 */   0x5f, 0xc3, 0x00, 0x00, 0x00, 0x00, 0x23, 0x00, // 42: R_X86_64_32       .text+0x3c
-                /* 48 */   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x33, 0x00, // 4a: R_X86_64_32       .text+0xb
-                /* 50 */   0x00, 0x00};
+//        unsigned char const thunkin_code[] = {
+//                /* 00 */   0x57, 0x56, 0x83, 0xec, 0x04, 0xff, 0x2d, 0x00, // 7: R_X86_64_32        .text+0x4a
+//                /* 08 */   0x00, 0x00, 0x00, 0x48, 0x63, 0x7c, 0x24, 0x10,
+//                /* 10 */   0x48, 0x63, 0x74, 0x24, 0x14, 0x48, 0x63, 0x54,
+//                /* 18 */   0x24, 0x18, 0x48, 0x63, 0x4c, 0x24, 0x1c, 0x4c,
+//                /* 20 */   0x63, 0x44, 0x24, 0x20, 0x4c, 0x63, 0x4c, 0x24,
+//                /* 28 */   0x24, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x89, // 2a: R_X86_64_PLT32    fun-0x4
+//                /* 30 */   0xc2, 0x48, 0xc1, 0xea, 0x20, 0xff, 0x2c, 0x25,
+//                /* 38 */   0x00, 0x00, 0x00, 0x00, 0x83, 0xc4, 0x04, 0x5e, // 38: R_X86_64_32S      .text+0x42
+//                /* 40 */   0x5f, 0xc3, 0x00, 0x00, 0x00, 0x00, 0x23, 0x00, // 42: R_X86_64_32       .text+0x3c
+//                /* 48 */   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x33, 0x00, // 4a: R_X86_64_32       .text+0xb
+//                /* 50 */   0x00, 0x00};
     }
 
     ThunkPreRel32::ThunkPreRel32(Elf64_Rela const& rela64) {
@@ -214,7 +218,9 @@ fun_addr_32to64:
         read_to_field(stub_elf, header);
 
         std::optional<elf64::Section64WithGenericData> text;
-        std::optional<elf64::Section64Rela> rela;
+        std::optional<elf64::Section64WithGenericData> rodata;
+        std::optional<elf64::Section64Rela> rela_text;
+        std::optional<elf64::Section64Rela> rela_rodata;
 
         for (size_t i = 0; i < header.e_shnum; ++i) {
             stub_elf.seekg(static_cast<ssize_t>(header.e_shoff + i * header.e_shentsize));
@@ -224,25 +230,48 @@ fun_addr_32to64:
                 // found .text
                 text.emplace(std::move(section64), stub_elf);
 
-                code.resize(text->header.sh_size);
-                std::copy(text->data.get(), text->data.get() + text->header.sh_size, code.data());
+                text_code.resize(text->header.sh_size);
+                std::copy(text->data.get(), text->data.get() + text->header.sh_size, text_code.data());
+            } else if (section64.header.sh_type == SHT_PROGBITS && section64.header.sh_flags == (SHF_ALLOC)) {
+                // found .rodata
+                rodata.emplace(std::move(section64), stub_elf);
+
+                rodata_code.resize(text->header.sh_size);
+                std::copy(rodata->data.get(), rodata->data.get() + rodata->header.sh_size, rodata_code.data());
 
             } else if (section64.header.sh_type == SHT_RELA) {
-                // found .rela.text
-                rela.emplace(std::move(section64), stub_elf);
+                switch (section64.header.sh_size) {
+                    case sizeof(Elf64_Rela) * 3:
+                        // found .rela_text
+                        rela_text.emplace(std::move(section64), stub_elf);
 
-                for (elf64::Rela64 const& rela64: rela->relocations) {
-                    relocations.emplace_back(rela64);
+                        for (elf64::Rela64 const& rela64: rela_text->relocations) {
+                            text_relocations.emplace_back(rela64);
+                        }
+                        break;
+
+                    case sizeof(Elf64_Rela) * 2:
+                        // found .rela_rodata
+                        rela_rodata.emplace(std::move(section64), stub_elf);
+
+                        for (elf64::Rela64 const& rela64: rela_rodata->relocations) {
+                            rodata_relocations.emplace_back(rela64);
+                        }
+                        break;
+
+                    default:
+                        throw UnsupportedFileContent{"Generated stub contains unexpected number of relocations."};
                 }
             }
 
-            if (text.has_value() && rela.has_value()) {
+            if (text.has_value() && rela_text.has_value() && rodata.has_value() && rela_rodata.has_value()) {
                 return;
             }
         }
+
         std::string error_msg{"Section"};
         if (!text.has_value()) error_msg.append(" <.text>");
-        if (!rela.has_value()) error_msg.append(" <.rela.text>");
+        if (!rela_text.has_value()) error_msg.append(" <.rela_text.text>");
         throw UnsupportedFileContent{error_msg + " not found in created code file."};
     }
 
@@ -270,12 +299,15 @@ fun_addr_32to64:
         for (uint32_t i = 0; i < func_spec.args.size(); ++i) {
             auto const& arg = func_spec.args[i];
 
-            char const*const reg = (arg.bytes_64() == 8 ? registers64 : registers32)[i];
+            char const*const reg = (arg.bytes_64() == 4 || (arg.size_differs() && !arg.is_signed())
+                                    ? registers32
+                                    : registers64
+                                   )[i];
             char const* instr;
             if (arg.size_differs()) {
                 instr = arg.is_signed()
                         ? "movslq"
-                        : "movzlq";
+                        : "movl";
             } else {
                 instr = arg.bytes_32() == 4
                         ? "movl"

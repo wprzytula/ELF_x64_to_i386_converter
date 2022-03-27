@@ -173,8 +173,8 @@ namespace converter::elf32 {
     }
 
     Thunk::Thunk(stubs::Stub stub, size_t const thunk_symbol_idx, size_t const func_symbol_idx)
-        : code{std::move(stub.code)} {
-        for (auto const pre_rel32 : stub.relocations) {
+        : code{std::move(stub.text_code)} {
+        for (auto const pre_rel32 : stub.text_relocations) {
             Rel32 rel = pre_rel32.local_symbol
                         ? Rel32::func_ref(pre_rel32.offset, func_symbol_idx)
                         : Rel32::thunk_self_ref(pre_rel32.offset, thunk_symbol_idx);

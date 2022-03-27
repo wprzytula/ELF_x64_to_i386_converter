@@ -132,8 +132,10 @@ namespace converter {
         };
 
         struct Stub {
-            std::vector<uint8_t> code;
-            std::vector<ThunkPreRel32> relocations;
+            std::vector<uint8_t> text_code;
+            std::vector<uint8_t> rodata_code;
+            std::vector<ThunkPreRel32> text_relocations;
+            std::vector<ThunkPreRel32> rodata_relocations;
 
             Stub(Stub const&) = delete;
             Stub(Stub&&) = default;
