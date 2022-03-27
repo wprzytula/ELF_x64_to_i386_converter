@@ -98,8 +98,12 @@ namespace converter::assembly {
         if (close(us_to_as[1]) == -1)
             syserr("Error in parent, us_to_as(1)");
 
-        if (wait(nullptr) == -1)
+        int wstatus;
+        if (wait(&wstatus) == -1)
             syserr("Error in wait");
+        if (!WIFEXITED(wstatus) || WEXITSTATUS(wstatus) != 0) {
+            fatal("GNU AS process returned non-0 code.");
+        }
 
         if (binary_text_only) {
             // fork OBJCOPY process
@@ -111,8 +115,11 @@ namespace converter::assembly {
                     break;
             }
 
-            if (wait(nullptr) == -1)
+            if (wait(&wstatus) == -1)
                 syserr("Error in wait");
+            if (!WIFEXITED(wstatus) || WEXITSTATUS(wstatus) != 0) {
+                fatal("OBJCOPY process returned non-0 code.");
+            }
         }
 
         return std::pair<Tempfile, std::string>{std::move(codefile_lock), codefile};
