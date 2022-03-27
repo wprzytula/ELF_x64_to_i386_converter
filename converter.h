@@ -8,8 +8,16 @@
 #include <vector>
 #include <set>
 #include <deque>
+#include <optional>
+
+#define read_to_field(ifstream, field) ifstream.read(reinterpret_cast<char*>(&(field)), sizeof(field))
+#define write_from_field(elf_stream, field) elf_stream.write(reinterpret_cast<char const*>(&(field)), sizeof(field))
 
 namespace converter {
+    struct UnsupportedFileContent : public std::invalid_argument {
+        explicit UnsupportedFileContent(std::string const& what) : std::invalid_argument(what) {}
+    };
+
     namespace func_spec {
 
         enum struct ArgType {
@@ -124,10 +132,11 @@ namespace converter {
         struct Stub {
             std::vector<uint8_t> code;
             std::vector<ThunkPreRel32> relocations;
-        private:
-            explicit Stub(std::ifstream& stub_elf);
+
             Stub(Stub const&) = delete;
             Stub(Stub&&) = default;
+        private:
+            explicit Stub(std::ifstream& stub_elf);
             static Stub from_assembly(std::string const& assembly);
         public:
             static Stub stubin(func_spec::Function const& func_spec);
@@ -208,7 +217,7 @@ namespace converter {
 
             static Symbol32 local_stub(Symbol32 const& global_symbol, Elf32_Word thunkout_section_idx);
 
-            static Symbol32 for_section(Section32 const& section, Elf32_Word section_idx);
+            static Symbol32 for_section(Section32 const& section, Elf32_Word section_idx, Elf32_Word section_name_idx);
 
             void write_out(std::ofstream& elf_file, size_t& i) const;
         };
@@ -339,7 +348,7 @@ namespace converter {
 
             Elf32_Word add_symbol(Symbol32 symbol);
 
-            Elf32_Word register_section(Section32 const& section, Elf32_Word section_idx);
+            Elf32_Word register_section(Section32 const& section, Elf32_Word section_idx, Elf32_Word section_name_idx);
 
             [[nodiscard]] std::string to_string() const override {
                 return "Section32Symtab";
