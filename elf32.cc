@@ -183,8 +183,11 @@ namespace converter::elf32 {
         }
     }
 
-    void Thunk::lay_to_sections(Section32Thunk& thunk_section, Section32Rel& rel_thunk_section) {
-        auto thunk_pos = thunk_section.add_thunk(std::move(code));
+    void Thunk::lay_to_sections(Section32Thunk& thunk_section, Section32Rel& rel_thunk_section,
+                                Symbol32& thunk_symbol) {
+        size_t thunk_pos = thunk_section.add_thunk(std::move(code));
+        thunk_symbol.st_value = thunk_pos;
+
         for (auto& rel: relocations) {
             rel.r_offset += thunk_pos;
             rel_thunk_section.relocations.push_back(rel);
@@ -424,6 +427,28 @@ namespace converter::elf32 {
         return pos;
     }
 
+    Section32Thunk Section32Thunk::make_thunk(Section32 const& thunked_section, size_t const symtab_idx,
+                                              Section32Strtab& strtab, std::string const& name) {
+        std::string thunk_section_name{strtab.name_of(thunked_section.header.sh_name)};
+        thunk_section_name += name;
+        Elf32_Word name_idx = strtab.append_name(thunk_section_name);
+
+        Elf32_Shdr header{
+                .sh_name = name_idx,
+                .sh_type = SHT_PROGBITS,
+                .sh_flags = SHF_ALLOC | SHF_EXECINSTR,
+                .sh_addr = 0,
+                .sh_offset = 0, // so far
+                .sh_size = 0, // so far
+                .sh_link = 0,
+                .sh_info = 0,
+                .sh_addralign = 1,
+                .sh_entsize = 0
+        };
+
+        return Section32Thunk{header};
+    }
+
     std::unique_ptr<Section32> Section32::convert_section(elf64::Section64 const& section64, Header32 const& elf_header) {
         if (dynamic_cast<elf64::Section64WithoutData const*>(&section64) != nullptr) {
             return std::make_unique<Section32WithoutData>(Section32WithoutData{
@@ -607,7 +632,8 @@ namespace converter::elf32 {
 
                             // - add new relocations that point from stubs to original symbols (e.g. thunk -> f)
                             // lay thunk to sections
-                            thunkin.lay_to_sections(thunkin_section, rel_thunkin_section);
+                            Symbol32& stub_symbol = symtab->symbols[global_symbol_idx];
+                            thunkin.lay_to_sections(thunkin_section, rel_thunkin_section, stub_symbol);
 
                             /* Case 1: DONE? */
 
@@ -671,7 +697,7 @@ namespace converter::elf32 {
 
                                 // construct and insert a stub.
                                 Thunkout thunkout{func_spec, thunkout_section_symbol_idx, global_symbol_idx};
-                                thunkout.lay_to_sections(thunkout_section, rel_thunkout_section);
+                                thunkout.lay_to_sections(thunkout_section, rel_thunkout_section, symbol);
                             }
                         }
                         size_t idx = symbol.st_shndx;

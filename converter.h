@@ -233,7 +233,7 @@ namespace converter {
 
             explicit Thunk(stubs::Stub stub, size_t thunk_symbol_idx, size_t func_symbol_idx);
 
-            void lay_to_sections(Section32Thunk& thunk_section, Section32Rel& rel_thunk_section);
+            void lay_to_sections(Section32Thunk& thunk_section, Section32Rel& rel_thunk_section, Symbol32& thunk_symbol);
         };
 
         struct Thunkin final : public Thunk {
@@ -419,27 +419,8 @@ namespace converter {
                 : Section32WithGrowableData{header} {}
         public:
 
-            static Section32Thunk make_thunk(Section32 const& thunked_section, size_t const symtab_idx,
-                                             Section32Strtab& strtab, std::string const& name) {
-                std::string thunk_section_name{strtab.name_of(thunked_section.header.sh_name)};
-                thunk_section_name += name;
-                Elf32_Word name_idx = strtab.append_name(thunk_section_name);
-
-                Elf32_Shdr header{
-                        .sh_name = name_idx,
-                        .sh_type = SHT_PROGBITS,
-                        .sh_flags = SHF_ALLOC | SHF_EXECINSTR,
-                        .sh_addr = 0,
-                        .sh_offset = 0, // so far
-                        .sh_size = 0, // so far
-                        .sh_link = 0,
-                        .sh_info = 0,
-                        .sh_addralign = 1,
-                        .sh_entsize = 0
-                };
-
-                return Section32Thunk{header};
-            }
+            static Section32Thunk make_thunk(Section32 const& thunked_section, size_t symtab_idx,
+                                             Section32Strtab& strtab, std::string const& name);
 
             [[nodiscard]] size_t add_thunk(std::vector<uint8_t> stub);
         };
