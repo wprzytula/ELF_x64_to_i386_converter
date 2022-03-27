@@ -116,14 +116,14 @@ namespace converter::elf32 {
         r_info = ELF32_R_INFO(symbol_idx, type);
     }
 
-    Rel32 Rel32::self_ref(Elf32_Addr const offset, Elf32_Word const self_symbol_idx) {
+    Rel32 Rel32::thunk_self_ref(Elf32_Addr const offset, Elf32_Word const self_symbol_idx) {
         printf("Constructing Rel32: offset=%u, type=self, symbol_idx=%u\n", offset, self_symbol_idx);
         return Rel32{offset, R_386_32, self_symbol_idx};
     }
 
-    Rel32 Rel32::local_symbol_ref(Elf32_Addr offset, Elf32_Word local_symbol_idx) {
-        printf("Constructing Rel32: offset=%u, type=local, symbol_idx=%u\n", offset, local_symbol_idx);
-        return Rel32{offset, R_386_PC32, local_symbol_idx};
+    Rel32 Rel32::func_ref(Elf32_Addr const offset, Elf32_Word const func_symbol_idx) {
+        printf("Constructing Rel32: offset=%u, type=func, symbol_idx=%u\n", offset, func_symbol_idx);
+        return Rel32{offset, R_386_PC32, func_symbol_idx};
     }
 
     Symbol32::Symbol32(elf64::Symbol64 const& symbol64) : Elf32_Sym{} {
@@ -140,25 +140,22 @@ namespace converter::elf32 {
         write_from_field(elf_file, *this);
     }
 
-    Symbol32::Symbol32(Symbol32 const& symbol, bool const global, Elf32_Word const thunk_section_idx) : Elf32_Sym{} {
+    Symbol32::Symbol32(Symbol32 const& symbol, Elf32_Word const type, Elf32_Word const binding,
+                       Elf32_Word const thunk_section_idx) : Elf32_Sym{} {
         st_name = symbol.st_name;
         st_value = symbol.st_value;
-        st_size = 0; // for now; TODO: remember to set to finally -> done
+        st_size = 0; // for now;
         st_shndx = thunk_section_idx;
         st_other = st_other;
-        Elf32_Word const type = STT_FUNC;
-        Elf32_Word const binding = global
-                                   ? STB_GLOBAL // global code for local 64-bit function
-                                   : STB_LOCAL;  // local code for external 32-bit function
         st_info = ELF32_ST_INFO(binding, type);
     }
 
     Symbol32 Symbol32::global_stub(Symbol32 const& local_symbol, Elf32_Word thunkin_section_idx) {
-        return Symbol32{local_symbol, true, thunkin_section_idx};
+        return Symbol32{local_symbol, STT_FUNC, STB_GLOBAL, thunkin_section_idx};
     }
 
-    Symbol32 Symbol32::local_stub(Symbol32 const& global_symbol, Elf32_Word thunkout_section_idx) {
-        return Symbol32{global_symbol, false, thunkout_section_idx};
+    Symbol32 Symbol32::global_ref(Symbol32 const& global_symbol) {
+        return Symbol32{global_symbol, STT_NOTYPE, STB_GLOBAL, 0 /* UNDEFINED section index */};
     }
 
     Symbol32::Symbol32(Section32 const& section, Elf32_Word const section_idx, Elf32_Word const section_name_idx)
@@ -175,27 +172,30 @@ namespace converter::elf32 {
         return Symbol32{section, section_idx, section_name_idx};
     }
 
-    Thunkin::Thunkin(func_spec::Function const& func_spec, size_t const thunk_symbol_idx, size_t const local_symbol_idx) {
-        using stubs::Stub;
-        Stub stub = Stub::stubin(func_spec);
-        code = std::move(stub.code);
-
+    Thunk::Thunk(stubs::Stub stub, size_t const thunk_symbol_idx, size_t const func_symbol_idx)
+        : code{std::move(stub.code)} {
         for (auto const pre_rel32 : stub.relocations) {
             Rel32 rel = pre_rel32.local_symbol
-                        ? Rel32::local_symbol_ref(pre_rel32.offset, local_symbol_idx)
-                        : Rel32::self_ref(pre_rel32.offset, thunk_symbol_idx);
+                        ? Rel32::func_ref(pre_rel32.offset, func_symbol_idx)
+                        : Rel32::thunk_self_ref(pre_rel32.offset, thunk_symbol_idx);
             *reinterpret_cast<Elf32_Word*>(code.data() + rel.r_offset) = pre_rel32.addend;
             relocations.push_back(rel);
         }
     }
 
-    void Thunkin::lay_to_sections(Section32Thunkin& thunkin_section, Section32Rel& rel_thunkin_section) {
-        auto thunk_pos = thunkin_section.add_thunkin(std::move(code));
+    void Thunk::lay_to_sections(Section32Thunk& thunk_section, Section32Rel& rel_thunk_section) {
+        auto thunk_pos = thunk_section.add_thunk(std::move(code));
         for (auto& rel: relocations) {
             rel.r_offset += thunk_pos;
-            rel_thunkin_section.relocations.push_back(rel);
+            rel_thunk_section.relocations.push_back(rel);
         }
     }
+
+    Thunkin::Thunkin(func_spec::Function const& func_spec, size_t const thunk_symbol_idx, size_t const local_symbol_idx)
+        : Thunk{stubs::Stub::stubin(func_spec), thunk_symbol_idx, local_symbol_idx} {}
+
+    Thunkout::Thunkout(func_spec::Function const& func_spec, size_t const thunk_symbol_idx, size_t const global_symbol_idx)
+        : Thunk{stubs::Stub::stubout(func_spec), thunk_symbol_idx, global_symbol_idx} {}
 
     Section32::Section32(elf64::Section64 const &section64) {
         header.sh_name = section64.header.sh_name;
@@ -418,7 +418,7 @@ namespace converter::elf32 {
         return Section32Rel{header};
     }
 
-    size_t Section32Thunkin::add_thunkin(std::vector<uint8_t> stub) {
+    size_t Section32Thunk::add_thunk(std::vector<uint8_t> stub) {
         auto const pos = data.size();
         data = std::move(stub);
         return pos;
@@ -550,7 +550,6 @@ namespace converter::elf32 {
 
                             Section32& thunked_section = *sections[symbol.st_shndx];
                             auto const& thunked_section_name = shstrtab->name_of(sections[symbol.st_shndx]->header.sh_name);
-                            printf("thunked sections's type: %s, name: %s\n", thunked_section.type(), thunked_section_name);
 
                             // - change original symbols from GLOBAL to LOCAL.
                             symbol.st_info = ELF32_ST_INFO(STB_LOCAL, STT_FUNC);
@@ -614,11 +613,13 @@ namespace converter::elf32 {
 
                         } else if (bind == STB_GLOBAL && type == STT_NOTYPE && functions.find(name) != functions.end()) {
                             // Case 2.
+                            std::cout << "Detected undefined binding to function:\n\tname: " << name << "\n";
+
                             auto const& func_spec = *functions.find(name);
                             if (functions.find(name) != functions.end()) {
                                 // the symbol is an external function, so we shall:
-                                // - add new local symbols: stubs that change mode to 32-bit,
-                                //   call global symbols and come back to 64-bit:
+                                // - change undefined global symbols into local symbols, pointing at stubs
+                                //   that change mode to 32-bit, call global symbols and come back to 64-bit.
 
                                 Section32& thunked_section = *sections[text_section_idx];
                                 auto const& thunked_section_name = shstrtab->name_of(sections[text_section_idx]->header.sh_name);
@@ -626,7 +627,7 @@ namespace converter::elf32 {
                                 // - create thunkout section if not exist, as well as corresponding rel.thunkout
                                 Elf32_Word thunkout_section_idx;
                                 Elf32_Word thunkout_section_symbol_idx;
-                                if (!thunkout_section_idcs[symbol.related_section_idx()].has_value()) {
+                                if (!thunkout_section_idcs[text_section_idx].has_value()) {
 
                                     thunkout_section_idx = sections.size();
                                     Elf32_Word const rel_thunkout_section_idx = thunkout_section_idx + 1;
@@ -637,7 +638,7 @@ namespace converter::elf32 {
                                     thunkout_section_symbol_idx = symtab->register_section(*thunkout_section, thunkout_section_idx,
                                                                                        thunkout_section_name_idx);
 
-                                    thunkout_section_idcs[symbol.related_section_idx()] = std::make_optional<>(
+                                    thunkout_section_idcs[text_section_idx] = std::make_optional<>(
                                             Indices{.thunk=thunkout_section_idx, .rel_thunk=rel_thunkout_section_idx, .symbol=thunkout_section_symbol_idx});
 
                                     add_new_section(std::move(thunkout_section));
@@ -649,23 +650,35 @@ namespace converter::elf32 {
 
                                     add_new_section(std::move(rel_thunkout_section));
                                 } else {
-                                    auto indices = thunkout_section_idcs[symbol.related_section_idx()].value();
+                                    auto indices = thunkout_section_idcs[text_section_idx].value();
                                     thunkout_section_idx = indices.thunk;
                                     thunkout_section_symbol_idx = indices.symbol;
                                 }
 
+                                // add new undefined global symbol, mimicking the altered one.
+                                auto global_symbol_idx = symtab->add_symbol(Symbol32::global_ref(symbol));
 
-                                // - change relocations in the way that now they point to new symbols (stubs)
-                                //   instead of original external functions (e.g. [!-> fputs] => [-> thunk_fputs])
+                                // alter the former symbol: make it local and pointing to .thunkout section.
+                                symbol.st_info = ELF32_ST_INFO(STB_LOCAL, type);
+                                symbol.st_shndx = thunkout_section_idx;
+                                symbols_to_be_sized[symtab_idx].push_back(symbol_idx);
+
+                                // just get references to thunk & thunk rel sections
+                                auto& thunkout_section = dynamic_cast<Section32Thunkout&>(
+                                        *sections[thunkout_section_idcs[text_section_idx]->thunk]);
+                                auto& rel_thunkout_section = dynamic_cast<Section32Rel&>(
+                                        *sections[thunkout_section_idcs[text_section_idx]->rel_thunk]);
+
+                                // construct and insert a stub.
+                                Thunkout thunkout{func_spec, thunkout_section_symbol_idx, global_symbol_idx};
+                                thunkout.lay_to_sections(thunkout_section, rel_thunkout_section);
                             }
                         }
-/*                        size_t idx = symbol.st_shndx;
-                        std::unique_ptr<Section32> const& section = sections[idx];
-                        section->name(*secstrtab);
-                        std::cout << "Symbol: <" << symstrtab->name_of(symbol.st_name) << ">,\t"
-                                  "relevant to section no=" << symbol.st_shndx << " : " <<
+                        size_t idx = symbol.st_shndx;
+                        /*std::cout << "Symbol: <" << symstrtab.name_of(symbol.st_name) << ">,\t"
+                                  "relevant to section no=" << symbol.st_shndx <<*//* " : " <<
                                   (symbol.special_section ? "" : section->name(*secstrtab) )
-                                  << '\n';*/
+                                  <<*//* '\n';*/
                     }
                 }
             }

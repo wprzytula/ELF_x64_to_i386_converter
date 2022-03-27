@@ -198,16 +198,17 @@ namespace converter {
         public:
             explicit Rel32(Rela32 const& rela32, Section32Rela const& section32_rela, sections32_t& sections);
 
-            static Rel32 self_ref(Elf32_Addr offset, Elf32_Word self_symbol_idx);
+            static Rel32 thunk_self_ref(Elf32_Addr offset, Elf32_Word self_symbol_idx);
 
-            static Rel32 local_symbol_ref(Elf32_Addr offset, Elf32_Word local_symbol_idx);
+            static Rel32 func_ref(Elf32_Addr offset, Elf32_Word func_symbol_idx);
 
             void write_out(std::ofstream& elf_file, size_t& i) const;
         };
 
         struct Symbol32 : Elf32_Sym {
         private:
-            explicit Symbol32(Symbol32 const& symbol, bool global, Elf32_Word thunk_section_idx);
+            explicit Symbol32(Symbol32 const& symbol, Elf32_Word type, Elf32_Word binding,
+                              Elf32_Word thunk_section_idx);
             explicit Symbol32(Section32 const& section, Elf32_Word section_idx,
                               Elf32_Word section_name_idx);
         public:
@@ -219,7 +220,7 @@ namespace converter {
 
             static Symbol32 global_stub(Symbol32 const& local_symbol, Elf32_Word thunkin_section_idx);
 
-            static Symbol32 local_stub(Symbol32 const& global_symbol, Elf32_Word thunkout_section_idx);
+            static Symbol32 global_ref(Symbol32 const& global_symbol);
 
             static Symbol32 for_section(Section32 const& section, Elf32_Word section_idx, Elf32_Word section_name_idx);
 
@@ -229,15 +230,18 @@ namespace converter {
         struct Thunk {
             std::vector<uint8_t> code;
             std::vector<Rel32> relocations;
+
+            explicit Thunk(stubs::Stub stub, size_t thunk_symbol_idx, size_t func_symbol_idx);
+
+            void lay_to_sections(Section32Thunk& thunk_section, Section32Rel& rel_thunk_section);
         };
 
         struct Thunkin final : public Thunk {
             explicit Thunkin(func_spec::Function const& func_spec, size_t thunk_symbol_idx, size_t local_symbol_idx);
-            void lay_to_sections(Section32Thunkin& thunkin_section, Section32Rel& rel_thunkin_section);
         };
 
         struct Thunkout final : public Thunk {
-            explicit Thunkout(func_spec::Function const& func_spec);
+            explicit Thunkout(func_spec::Function const& func_spec, size_t thunk_symbol_idx, size_t global_symbol_idx);
         };
 
         struct Section32 {
@@ -436,6 +440,8 @@ namespace converter {
 
                 return Section32Thunk{header};
             }
+
+            [[nodiscard]] size_t add_thunk(std::vector<uint8_t> stub);
         };
 
         struct Section32Thunkin final : public Section32Thunk {
@@ -443,8 +449,6 @@ namespace converter {
             Section32Thunkin(Section32Thunkin&& section) = default;
             explicit Section32Thunkin(Section32 const& thunked_section, size_t const symtab_idx, Section32Strtab& strtab)
                 : Section32Thunk{make_thunk(thunked_section, symtab_idx, strtab, ".thunkin")} {}
-
-            [[nodiscard]] size_t add_thunkin(std::vector<uint8_t> stub);
         };
 
         struct Section32Thunkout final : public Section32Thunk {
