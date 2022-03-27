@@ -6,7 +6,6 @@
 
 namespace converter::func_spec {
     ArgType Arg::parse_arg_type(char const* argtype) {
-//            std::cout << "argtype: " << argtype << '\n';
         if (strcmp(argtype, "int") == 0) return int_t;
         if (strcmp(argtype, "uint") == 0) return uint_t;
         if (strcmp(argtype, "long") == 0) return long_t;

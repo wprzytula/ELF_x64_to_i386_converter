@@ -142,6 +142,7 @@ namespace converter {
             static Stub from_assembly(std::string const& assembly);
         public:
             static std::string asmin(func_spec::Function const& func_spec);
+            static std::string asmout(func_spec::Function const& func_spec);
             static Stub stubin(func_spec::Function const& func_spec);
             static Stub stubout(func_spec::Function const& func_spec);
         };
