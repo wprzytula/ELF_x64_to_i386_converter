@@ -230,20 +230,27 @@ namespace converter {
         };
 
         struct Thunk {
-            std::vector<uint8_t> code;
-            std::vector<Rel32> relocations;
+            std::vector<uint8_t> text_code;
+            std::vector<uint8_t> rodata_code;
+            std::vector<Rel32> text_relocations;
+            std::vector<Rel32> rodata_relocations;
 
-            explicit Thunk(stubs::Stub stub, size_t thunk_symbol_idx, size_t func_symbol_idx);
+            explicit Thunk(stubs::Stub stub, size_t thunk_text_symbol_idx, size_t thunk_rodata_symbol_idx,
+                           size_t func_symbol_idx);
 
-            void lay_to_sections(Section32Thunk& thunk_section, Section32Rel& rel_thunk_section, Symbol32& thunk_symbol);
+            void lay_to_sections(Section32Thunk& thunk_text_section, Section32Rel& rel_thunk_text_section,
+                                 Section32Thunk& thunk_rodata_section, Section32Rel& rel_thunk_rodata_section,
+                                 Symbol32& thunk_symbol);
         };
 
         struct Thunkin final : public Thunk {
-            explicit Thunkin(func_spec::Function const& func_spec, size_t thunk_symbol_idx, size_t local_symbol_idx);
+            explicit Thunkin(func_spec::Function const& func_spec, size_t thunk_text_symbol_idx,
+                             size_t thunk_rodata_symbol_idx, size_t local_symbol_idx);
         };
 
         struct Thunkout final : public Thunk {
-            explicit Thunkout(func_spec::Function const& func_spec, size_t thunk_symbol_idx, size_t global_symbol_idx);
+            explicit Thunkout(func_spec::Function const& func_spec, size_t thunk_text_symbol_idx,
+                              size_t thunk_rodata_symbol_idx, size_t global_symbol_idx);
         };
 
         struct Section32 {
@@ -421,7 +428,7 @@ namespace converter {
                 : Section32WithGrowableData{header} {}
         public:
 
-            static Section32Thunk make_thunk(Section32 const& thunked_section, size_t symtab_idx,
+            static Section32Thunk make_thunk(std::string const& thunked_name, size_t const symtab_idx,
                                              Section32Strtab& strtab, std::string const& name);
 
             [[nodiscard]] size_t add_thunk(std::vector<uint8_t> stub);
@@ -430,15 +437,15 @@ namespace converter {
         struct Section32Thunkin final : public Section32Thunk {
             ~Section32Thunkin() override = default;
             Section32Thunkin(Section32Thunkin&& section) = default;
-            explicit Section32Thunkin(Section32 const& thunked_section, size_t const symtab_idx, Section32Strtab& strtab)
-                : Section32Thunk{make_thunk(thunked_section, symtab_idx, strtab, ".thunkin")} {}
+            explicit Section32Thunkin(std::string const& thunked_name, size_t const symtab_idx, Section32Strtab& strtab)
+                : Section32Thunk{make_thunk(thunked_name, symtab_idx, strtab, ".thunkin")} {}
         };
 
         struct Section32Thunkout final : public Section32Thunk {
             ~Section32Thunkout() override = default;
             Section32Thunkout(Section32Thunkout&& section) = default;
-            explicit Section32Thunkout(Section32 const& thunked_section, size_t const symtab_idx, Section32Strtab& strtab)
-            : Section32Thunk{make_thunk(thunked_section, symtab_idx, strtab, ".thunkout")} {}
+            explicit Section32Thunkout(std::string const& thunked_name, size_t const symtab_idx, Section32Strtab& strtab)
+            : Section32Thunk{make_thunk(thunked_name, symtab_idx, strtab, ".thunkout")} {}
         };
 
         struct Elf32 {

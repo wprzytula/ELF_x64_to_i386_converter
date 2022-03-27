@@ -172,33 +172,52 @@ namespace converter::elf32 {
         return Symbol32{section, section_idx, section_name_idx};
     }
 
-    Thunk::Thunk(stubs::Stub stub, size_t const thunk_symbol_idx, size_t const func_symbol_idx)
-        : code{std::move(stub.text_code)} {
+    Thunk::Thunk(stubs::Stub stub, size_t const thunk_text_symbol_idx, size_t const thunk_rodata_symbol_idx,
+                 size_t const func_symbol_idx)
+        : text_code{std::move(stub.text_code)}, rodata_code{std::move(stub.rodata_code)} {
+
         for (auto const pre_rel32 : stub.text_relocations) {
             Rel32 rel = pre_rel32.local_symbol
                         ? Rel32::func_ref(pre_rel32.offset, func_symbol_idx)
-                        : Rel32::thunk_self_ref(pre_rel32.offset, thunk_symbol_idx);
-            *reinterpret_cast<Elf32_Word*>(code.data() + rel.r_offset) = pre_rel32.addend;
-            relocations.push_back(rel);
+                        : Rel32::thunk_self_ref(pre_rel32.offset, thunk_rodata_symbol_idx);
+            *reinterpret_cast<Elf32_Word*>(text_code.data() + rel.r_offset) = pre_rel32.addend;
+            text_relocations.push_back(rel);
+        }
+
+        for (auto const pre_rel32 : stub.rodata_relocations) {
+            Rel32 rel = pre_rel32.local_symbol
+                        ? Rel32::func_ref(pre_rel32.offset, func_symbol_idx)
+                        : Rel32::thunk_self_ref(pre_rel32.offset, thunk_text_symbol_idx);
+            *reinterpret_cast<Elf32_Word*>(rodata_code.data() + rel.r_offset) = pre_rel32.addend;
+            rodata_relocations.push_back(rel);
         }
     }
 
-    void Thunk::lay_to_sections(Section32Thunk& thunk_section, Section32Rel& rel_thunk_section,
+    void Thunk::lay_to_sections(Section32Thunk& thunk_text_section, Section32Rel& rel_thunk_text_section,
+                                Section32Thunk& thunk_rodata_section, Section32Rel& rel_thunk_rodata_section,
                                 Symbol32& thunk_symbol) {
-        size_t thunk_pos = thunk_section.add_thunk(std::move(code));
-        thunk_symbol.st_value = thunk_pos;
+        size_t thunk_text_pos = thunk_text_section.add_thunk(std::move(text_code));
+        size_t thunk_rodata_pos = thunk_rodata_section.add_thunk(std::move(rodata_code));
+        thunk_symbol.st_value = thunk_text_pos;
 
-        for (auto& rel: relocations) {
-            rel.r_offset += thunk_pos;
-            rel_thunk_section.relocations.push_back(rel);
+        for (auto& rel: text_relocations) {
+            rel.r_offset += thunk_text_pos;
+            rel_thunk_text_section.relocations.push_back(rel);
+        }
+
+        for (auto& rel: rodata_relocations) {
+            rel.r_offset += thunk_rodata_pos;
+            rel_thunk_rodata_section.relocations.push_back(rel);
         }
     }
 
-    Thunkin::Thunkin(func_spec::Function const& func_spec, size_t const thunk_symbol_idx, size_t const local_symbol_idx)
-        : Thunk{stubs::Stub::stubin(func_spec), thunk_symbol_idx, local_symbol_idx} {}
+    Thunkin::Thunkin(func_spec::Function const& func_spec, size_t const thunk_text_symbol_idx,
+                     size_t const thunk_rodata_symbol_idx, size_t const local_symbol_idx)
+        : Thunk{stubs::Stub::stubin(func_spec), thunk_text_symbol_idx, thunk_rodata_symbol_idx, local_symbol_idx} {}
 
-    Thunkout::Thunkout(func_spec::Function const& func_spec, size_t const thunk_symbol_idx, size_t const global_symbol_idx)
-        : Thunk{stubs::Stub::stubout(func_spec), thunk_symbol_idx, global_symbol_idx} {}
+    Thunkout::Thunkout(func_spec::Function const& func_spec, size_t const thunk_text_symbol_idx,
+                       size_t const thunk_rodata_symbol_idx, size_t const global_symbol_idx)
+        : Thunk{stubs::Stub::stubout(func_spec), thunk_text_symbol_idx, thunk_rodata_symbol_idx, global_symbol_idx} {}
 
     Section32::Section32(elf64::Section64 const &section64) {
         header.sh_name = section64.header.sh_name;
@@ -427,11 +446,9 @@ namespace converter::elf32 {
         return pos;
     }
 
-    Section32Thunk Section32Thunk::make_thunk(Section32 const& thunked_section, size_t const symtab_idx,
+    Section32Thunk Section32Thunk::make_thunk(std::string const& thunked_name, size_t const symtab_idx,
                                               Section32Strtab& strtab, std::string const& name) {
-        std::string thunk_section_name{strtab.name_of(thunked_section.header.sh_name)};
-        thunk_section_name += name;
-        Elf32_Word name_idx = strtab.append_name(thunk_section_name);
+        Elf32_Word name_idx = strtab.append_name(thunked_name + name);
 
         Elf32_Shdr header{
                 .sh_name = name_idx,
@@ -536,9 +553,12 @@ namespace converter::elf32 {
 
     void Elf32::convert_symbols(func_spec::Functions const& functions) {
         struct Indices {
-            Elf32_Word thunk;
-            Elf32_Word rel_thunk;
-            Elf32_Word symbol;
+            Elf32_Word thunk_text;
+            Elf32_Word thunk_rodata;
+            Elf32_Word rel_thunk_text;
+            Elf32_Word rel_thunk_rodata;
+            Elf32_Word text_symbol;
+            Elf32_Word rodata_symbol;
         };
 
         Elf32_Word text_section_idx = 0;
@@ -576,64 +596,95 @@ namespace converter::elf32 {
                             Section32& thunked_section = *sections[symbol.st_shndx];
                             auto const& thunked_section_name = shstrtab->name_of(sections[symbol.st_shndx]->header.sh_name);
 
-                            // - change original symbols from GLOBAL to LOCAL.
-                            symbol.st_info = ELF32_ST_INFO(STB_LOCAL, STT_FUNC);
-
                             if (functions.find(name) == functions.end()) {
                                 throw UnsupportedFileContent{std::string{"Local function "} + name + " not present in function file."};
                             }
                             auto const& func_spec = *functions.find(name);
 
+                            // - change original symbols from GLOBAL to LOCAL.
+                            symbol.st_info = ELF32_ST_INFO(STB_LOCAL, STT_FUNC);
+
                             // - create thunkin section if not exist, as well as corresponding rel.thunkin
-                            Elf32_Word thunkin_section_idx;
-                            Elf32_Word thunkin_section_symbol_idx;
+                            Elf32_Word thunkin_text_section_idx;
+                            Elf32_Word thunkin_rodata_section_idx;
+                            Elf32_Word thunkin_text_section_symbol_idx;
+                            Elf32_Word thunkin_rodata_section_symbol_idx;
                             if (!thunkin_section_idcs[symbol.related_section_idx()].has_value()) {
 
-                                thunkin_section_idx = sections.size();
-                                Elf32_Word const rel_thunkin_section_idx = thunkin_section_idx + 1;
+                                thunkin_text_section_idx = sections.size();
+                                Elf32_Word const rel_thunkin_text_section_idx = thunkin_text_section_idx + 1;
+                                thunkin_rodata_section_idx = sections.size() + 2;
+                                Elf32_Word const rel_thunkin_rodata_section_idx = thunkin_rodata_section_idx + 1;
 
-                                auto thunkin_section = std::make_unique<Section32Thunkin>(thunked_section, symtab_idx, *shstrtab);
-                                auto thunkin_section_name_idx = symstrtab.append_name(thunked_section_name + std::string{".thunkin"});
-                                thunkin_section_symbol_idx = symtab->register_section(*thunkin_section, thunkin_section_idx,
-                                                                                   thunkin_section_name_idx);
+                                // text thunkin & rela sections creation
+                                auto thunkin_text_section = std::make_unique<Section32Thunkin>(".text", symtab_idx, *shstrtab);
+                                auto thunkin_text_section_name_idx = symstrtab.append_name(thunked_section_name + std::string{".thunkin"});
+                                thunkin_text_section_symbol_idx = symtab->register_section(*thunkin_text_section, thunkin_text_section_idx,
+                                                                                           thunkin_text_section_name_idx);
+                                add_new_section(std::move(thunkin_text_section));
 
-                                thunkin_section_idcs[symbol.related_section_idx()] = std::make_optional<>(
-                                        Indices{.thunk=thunkin_section_idx, .rel_thunk=rel_thunkin_section_idx, .symbol=thunkin_section_symbol_idx});
-
-                                add_new_section(std::move(thunkin_section));
-
-                                auto rel_thunkin_section = std::make_unique<Section32Rel>(Section32Rel::make_for_thunk(
-                                        dynamic_cast<Section32Thunk&>(*sections[thunkin_section_idx]),
-                                        thunkin_section_idx, *shstrtab, symtab_idx)
+                                auto rel_thunkin_text_section = std::make_unique<Section32Rel>(Section32Rel::make_for_thunk(
+                                        dynamic_cast<Section32Thunk&>(*sections[thunkin_text_section_idx]),
+                                        thunkin_text_section_idx, *shstrtab, symtab_idx)
                                 );
 
-                                add_new_section(std::move(rel_thunkin_section));
+                                add_new_section(std::move(rel_thunkin_text_section));
+
+                                // rodata thunkin & rela sections creation
+                                auto thunkin_rodata_section = std::make_unique<Section32Thunkin>(".rodata", symtab_idx, *shstrtab);
+                                auto thunkin_rodata_section_name_idx = symstrtab.append_name(".rodata.thunkin"); // FIXME
+                                thunkin_rodata_section_symbol_idx = symtab->register_section(*thunkin_rodata_section, thunkin_rodata_section_idx,
+                                                                                           thunkin_rodata_section_name_idx);
+                                add_new_section(std::move(thunkin_rodata_section));
+
+                                auto rel_thunkin_rodata_section = std::make_unique<Section32Rel>(Section32Rel::make_for_thunk(
+                                        dynamic_cast<Section32Thunk&>(*sections[thunkin_rodata_section_idx]),
+                                        thunkin_rodata_section_idx, *shstrtab, symtab_idx)
+                                );
+
+                                add_new_section(std::move(rel_thunkin_rodata_section));
+
+                                // save indices
+                                thunkin_section_idcs[symbol.related_section_idx()] = std::make_optional<>(
+                                        Indices{.thunk_text=thunkin_text_section_idx, .thunk_rodata=thunkin_rodata_section_idx,
+                                                .rel_thunk_text=rel_thunkin_text_section_idx,
+                                                .rel_thunk_rodata=rel_thunkin_rodata_section_idx,
+                                                .text_symbol=thunkin_text_section_symbol_idx,
+                                                .rodata_symbol=thunkin_rodata_section_symbol_idx});
                             } else {
                                 auto indices = thunkin_section_idcs[symbol.related_section_idx()].value();
-                                thunkin_section_idx = indices.thunk;
-                                thunkin_section_symbol_idx = indices.symbol;
+                                thunkin_text_section_idx = indices.thunk_text;
+                                thunkin_rodata_section_idx = indices.thunk_rodata;
+                                thunkin_text_section_symbol_idx = indices.text_symbol;
+                                thunkin_rodata_section_symbol_idx = indices.rodata_symbol;
                             }
 
                             /* - add new global symbols: trampolines that change mode from 32-bit to 64-bit,
                              *   call original function and change mode back to 32-bit. */
 
                             // add global symbol
-                            auto global_symbol_idx = symtab->add_symbol(Symbol32::global_stub(symbol, thunkin_section_idx));
+                            auto global_symbol_idx = symtab->add_symbol(Symbol32::global_stub(symbol, thunkin_text_section_idx));
                             symbols_to_be_sized[symtab_idx].push_back(global_symbol_idx);
 
+                            auto const& indices = thunkin_section_idcs[symbol.related_section_idx()].value();
                             // just get references to thunk & thunk rel sections
-                            auto& thunkin_section = dynamic_cast<Section32Thunkin&>(
-                                    *sections[thunkin_section_idcs[symbol.related_section_idx()]->thunk]);
-                            auto& rel_thunkin_section = dynamic_cast<Section32Rel&>(
-                                    *sections[thunkin_section_idcs[symbol.related_section_idx()]->rel_thunk]);
+                            auto& thunkin_text_section = dynamic_cast<Section32Thunkin&>(
+                                    *sections[indices.thunk_text]);
+                            auto& rel_thunkin_text_section = dynamic_cast<Section32Rel&>(
+                                    *sections[indices.rel_thunk_text]);
+                            auto& thunkin_rodata_section = dynamic_cast<Section32Thunkin&>(
+                                    *sections[indices.thunk_rodata]);
+                            auto& rel_thunkin_rodata_section = dynamic_cast<Section32Rel&>(
+                                    *sections[indices.rel_thunk_rodata]);
 
                             // build thunkin
-                            Thunkin thunkin{func_spec, thunkin_section_symbol_idx, symbol_idx};
+                            Thunkin thunkin{func_spec, thunkin_text_section_symbol_idx, thunkin_rodata_section_symbol_idx, symbol_idx};
 
                             // - add new relocations that point from stubs to original symbols (e.g. thunk -> f)
                             // lay thunk to sections
                             Symbol32& stub_symbol = symtab->symbols[global_symbol_idx];
-                            thunkin.lay_to_sections(thunkin_section, rel_thunkin_section, stub_symbol);
+                            thunkin.lay_to_sections(thunkin_text_section, rel_thunkin_text_section, thunkin_rodata_section,
+                                                    rel_thunkin_rodata_section, stub_symbol);
 
                             /* Case 1: DONE? */
 
@@ -651,34 +702,59 @@ namespace converter::elf32 {
                                 auto const& thunked_section_name = shstrtab->name_of(sections[text_section_idx]->header.sh_name);
 
                                 // - create thunkout section if not exist, as well as corresponding rel.thunkout
-                                Elf32_Word thunkout_section_idx;
-                                Elf32_Word thunkout_section_symbol_idx;
+                                Elf32_Word thunkout_text_section_idx;
+                                Elf32_Word thunkout_text_section_symbol_idx;
+                                Elf32_Word thunkout_rodata_section_idx;
+                                Elf32_Word thunkout_rodata_section_symbol_idx;
+
                                 if (!thunkout_section_idcs[text_section_idx].has_value()) {
 
-                                    thunkout_section_idx = sections.size();
-                                    Elf32_Word const rel_thunkout_section_idx = thunkout_section_idx + 1;
+                                    thunkout_text_section_idx = sections.size();
+                                    Elf32_Word const rel_thunkout_text_section_idx = thunkout_text_section_idx + 1;
+                                    thunkout_rodata_section_idx = sections.size() + 2;
+                                    Elf32_Word const rel_thunkout_rodata_section_idx = thunkout_rodata_section_idx + 1;
 
-                                    auto thunkout_section = std::make_unique<Section32Thunkout>(thunked_section, symtab_idx, *shstrtab);
+                                    auto thunkout_text_section = std::make_unique<Section32Thunkout>(".text", symtab_idx, *shstrtab);
+                                    auto thunkout_text_section_name_idx = symstrtab.append_name(thunked_section_name + std::string{".thunkout"});
+                                    thunkout_text_section_symbol_idx = symtab->register_section(*thunkout_text_section, thunkout_text_section_idx,
+                                                                                                thunkout_text_section_name_idx);
+                                    add_new_section(std::move(thunkout_text_section));
 
-                                    auto thunkout_section_name_idx = symstrtab.append_name(thunked_section_name + std::string{".thunkout"});
-                                    thunkout_section_symbol_idx = symtab->register_section(*thunkout_section, thunkout_section_idx,
-                                                                                       thunkout_section_name_idx);
-
-                                    thunkout_section_idcs[text_section_idx] = std::make_optional<>(
-                                            Indices{.thunk=thunkout_section_idx, .rel_thunk=rel_thunkout_section_idx, .symbol=thunkout_section_symbol_idx});
-
-                                    add_new_section(std::move(thunkout_section));
-
-                                    auto rel_thunkout_section = std::make_unique<Section32Rel>(Section32Rel::make_for_thunk(
-                                            dynamic_cast<Section32Thunk&>(*sections[thunkout_section_idx]),
-                                            thunkout_section_idx, *shstrtab, symtab_idx)
+                                    auto rel_thunkout_text_section = std::make_unique<Section32Rel>(Section32Rel::make_for_thunk(
+                                            dynamic_cast<Section32Thunk&>(*sections[thunkout_text_section_idx]),
+                                            thunkout_text_section_idx, *shstrtab, symtab_idx)
                                     );
 
-                                    add_new_section(std::move(rel_thunkout_section));
+                                    add_new_section(std::move(rel_thunkout_text_section));
+
+                                    auto thunkout_rodata_section = std::make_unique<Section32Thunkout>(".rodata", symtab_idx, *shstrtab);
+                                    auto thunkout_rodata_section_name_idx = symstrtab.append_name(".rodata.thunkout"); // FIXME
+                                    thunkout_rodata_section_symbol_idx = symtab->register_section(*thunkout_rodata_section, thunkout_rodata_section_idx,
+                                                                                                  thunkout_rodata_section_name_idx);
+
+                                    add_new_section(std::move(thunkout_rodata_section));
+
+                                    auto rel_thunkout_rodata_section = std::make_unique<Section32Rel>(Section32Rel::make_for_thunk(
+                                            dynamic_cast<Section32Thunk&>(*sections[thunkout_rodata_section_idx]),
+                                            thunkout_rodata_section_idx, *shstrtab, symtab_idx)
+                                    );
+
+                                    add_new_section(std::move(rel_thunkout_rodata_section));
+
+                                    thunkout_section_idcs[text_section_idx] = std::make_optional<>(
+                                            Indices{.thunk_text=thunkout_text_section_idx,
+                                                    .thunk_rodata=thunkout_rodata_section_idx,
+                                                    .rel_thunk_text=rel_thunkout_text_section_idx,
+                                                    .rel_thunk_rodata=rel_thunkout_rodata_section_idx,
+                                                    .text_symbol=thunkout_text_section_symbol_idx,
+                                                    .rodata_symbol=thunkout_rodata_section_symbol_idx});
+
                                 } else {
                                     auto indices = thunkout_section_idcs[text_section_idx].value();
-                                    thunkout_section_idx = indices.thunk;
-                                    thunkout_section_symbol_idx = indices.symbol;
+                                    thunkout_text_section_idx = indices.thunk_text;
+                                    thunkout_rodata_section_idx = indices.thunk_rodata;
+                                    thunkout_text_section_symbol_idx = indices.text_symbol;
+                                    thunkout_rodata_section_symbol_idx = indices.rodata_symbol;
                                 }
 
                                 // add new undefined global symbol, mimicking the altered one.
@@ -686,25 +762,27 @@ namespace converter::elf32 {
 
                                 // alter the former symbol: make it local and pointing to .thunkout section.
                                 symbol.st_info = ELF32_ST_INFO(STB_LOCAL, type);
-                                symbol.st_shndx = thunkout_section_idx;
+                                symbol.st_shndx = thunkout_text_section_idx;
                                 symbols_to_be_sized[symtab_idx].push_back(symbol_idx);
 
                                 // just get references to thunk & thunk rel sections
-                                auto& thunkout_section = dynamic_cast<Section32Thunkout&>(
-                                        *sections[thunkout_section_idcs[text_section_idx]->thunk]);
-                                auto& rel_thunkout_section = dynamic_cast<Section32Rel&>(
-                                        *sections[thunkout_section_idcs[text_section_idx]->rel_thunk]);
+                                auto& thunkout_text_section = dynamic_cast<Section32Thunkout&>(
+                                        *sections[thunkout_section_idcs[text_section_idx]->thunk_text]);
+                                auto& rel_thunkout_text_section = dynamic_cast<Section32Rel&>(
+                                        *sections[thunkout_section_idcs[text_section_idx]->rel_thunk_text]);
+                                auto& thunkout_rodata_section = dynamic_cast<Section32Thunkout&>(
+                                        *sections[thunkout_section_idcs[text_section_idx]->thunk_rodata]);
+                                auto& rel_thunkout_rodata_section = dynamic_cast<Section32Rel&>(
+                                        *sections[thunkout_section_idcs[text_section_idx]->rel_thunk_rodata]);
 
                                 // construct and insert a stub.
-                                Thunkout thunkout{func_spec, thunkout_section_symbol_idx, global_symbol_idx};
-                                thunkout.lay_to_sections(thunkout_section, rel_thunkout_section, symbol);
+                                Thunkout thunkout{func_spec, thunkout_text_section_symbol_idx,
+                                                  thunkout_rodata_section_symbol_idx, global_symbol_idx};
+                                thunkout.lay_to_sections(thunkout_text_section, rel_thunkout_text_section,
+                                                         thunkout_rodata_section, rel_thunkout_rodata_section,
+                                                         symbol);
                             }
                         }
-                        size_t idx = symbol.st_shndx;
-                        /*std::cout << "Symbol: <" << symstrtab.name_of(symbol.st_name) << ">,\t"
-                                  "relevant to section no=" << symbol.st_shndx <<*//* " : " <<
-                                  (symbol.special_section ? "" : section->name(*secstrtab) )
-                                  <<*//* '\n';*/
                     }
                 }
             }
