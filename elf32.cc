@@ -318,8 +318,8 @@ namespace converter::elf32 {
         return header.sh_size;
     }
 
-    Elf32_Word Section32Symtab::add_symbol(Symbol32 const symbol, size_t& counter) {
-        ++counter;
+    Elf32_Word Section32Symtab::add_symbol(Symbol32 symbol) {
+        printf("\tAdding symbol with size=%u\n", symbol.st_size);
         auto pos = symbols.size();
         symbols.push_back(symbol);
         if (ELF32_ST_BIND(symbol.st_info) == STB_LOCAL) {
@@ -328,9 +328,9 @@ namespace converter::elf32 {
         return pos;
     }
 
-    Elf32_Word Section32Symtab::register_section(Section32 const& section, Elf32_Word const section_idx,
-                                                 Elf32_Word const section_name_idx, size_t& counter) {
-        return add_symbol(Symbol32::for_section(section, section_idx, section_name_idx), counter);
+    Elf32_Word
+    Section32Symtab::register_section(Section32 const& section, Elf32_Word section_idx, Elf32_Word section_name_idx) {
+        return add_symbol(Symbol32::for_section(section, section_idx, section_name_idx));
     }
 
     Section32Rela::Section32Rela(elf64::Section64Rela const& rela64) : Section32{rela64} {
@@ -598,8 +598,7 @@ namespace converter::elf32 {
                                 auto thunkin_section_name_idx = symstrtab.append_name(thunked_section_name + std::string{".thunkin"});
                                 thunkin_section_symbol_idx = symtab->register_section(*thunkin_section,
                                                                                       thunkin_section_idx,
-                                                                                      thunkin_section_name_idx,
-                                                                                      num_symbols_added);
+                                                                                      thunkin_section_name_idx);
 
                                 thunkin_section_idcs = std::make_optional<>(
                                         Indices{.thunk=thunkin_section_idx, .rel_thunk=rel_thunkin_section_idx, .symbol=thunkin_section_symbol_idx});
@@ -663,8 +662,7 @@ namespace converter::elf32 {
                                     auto thunkout_section_name_idx = symstrtab.append_name(thunked_section_name + std::string{".thunkout"});
                                     thunkout_section_symbol_idx = symtab->register_section(*thunkout_section,
                                                                                            thunkout_section_idx,
-                                                                                           thunkout_section_name_idx,
-                                                                                           num_symbols_added);
+                                                                                           thunkout_section_name_idx);
 
                                     thunkout_section_idcs = std::make_optional<>(
                                             Indices{.thunk=thunkout_section_idx, .rel_thunk=rel_thunkout_section_idx, .symbol=thunkout_section_symbol_idx});
@@ -684,8 +682,7 @@ namespace converter::elf32 {
                                 }
 
                                 // add new undefined global symbol, mimicking the altered one.
-                                auto global_symbol_idx = symtab->add_symbol(Symbol32::global_ref(symbol),
-                                                                            num_symbols_added);
+                                auto global_symbol_idx = symtab->add_symbol(Symbol32::global_ref(symbol));
 
                                 // alter the former symbol: make it local and pointing to .thunkout section.
                                 symbol.st_info = ELF32_ST_INFO(STB_LOCAL, type);
@@ -715,7 +712,7 @@ namespace converter::elf32 {
             for (auto& [symtab_idx, symbols]: global_symbols_to_be_added) {
                 auto& symtab = dynamic_cast<Section32Symtab&>(*sections[symtab_idx]);
                 for (Symbol32 const symbol: symbols) {
-                    auto symbol_idx = symtab.add_symbol(symbol, num_symbols_added);
+                    auto symbol_idx = symtab.add_symbol(symbol);
                 }
             }
         } catch (std::bad_cast const&) {
@@ -742,20 +739,26 @@ namespace converter::elf32 {
 
     void Elf32::restore_global_symbols() {
         size_t fake_counter;
+
+        // (old_idx, new_idx)
+        std::map<Elf32_Word, Elf32_Word> new_idcs;
+
         for (auto const& section : sections) { // looking for symtabs
             auto* const symtab = dynamic_cast<Section32Symtab*>(section.get());
             if (symtab != nullptr) { // found SYMTAB
-                for (auto const [_, symbol] : storage.symbols) {
-                    symtab->add_symbol(symbol, fake_counter);
+                for (auto const [old_idx, symbol] : storage.symbols) {
+                    auto const new_idx = symtab->add_symbol(symbol);
+                    new_idcs[old_idx] = new_idx;
                 }
             }
         }
+
         for (auto const& [section_idx, rel_idx] : storage.relocations) {
             auto& reltab = dynamic_cast<Section32Rel&>(*sections[section_idx]);
             Rel32& rel = reltab.relocations[rel_idx];
             auto sym = ELF32_R_SYM(rel.r_info);
             auto type = ELF32_R_TYPE(rel.r_info);
-            rel.r_info = ELF32_R_INFO(sym + num_symbols_added, type);
+            rel.r_info = ELF32_R_INFO(new_idcs[sym], type);
         }
     }
 

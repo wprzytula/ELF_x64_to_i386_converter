@@ -187,10 +187,6 @@ namespace converter {
         public:
             explicit Symbol32(elf64::Symbol64 const& symbol64);
 
-            [[nodiscard]] decltype(st_shndx) related_section_idx() const {
-                return st_shndx;
-            }
-
             static Symbol32 global_stub(Symbol32 const& local_symbol, Elf32_Word thunkin_section_idx);
 
             static Symbol32 global_ref(Symbol32 const& global_symbol);
@@ -327,10 +323,9 @@ namespace converter {
                 return header.sh_link;
             }
 
-            Elf32_Word add_symbol(Symbol32 symbol, size_t& counter);
+            Elf32_Word add_symbol(Symbol32 symbol);
 
-            Elf32_Word register_section(Section32 const& section, Elf32_Word section_idx,
-                                        Elf32_Word section_name_idx, size_t& counter);
+            Elf32_Word register_section(Section32 const& section, Elf32_Word section_idx, Elf32_Word section_name_idx);
 
             [[nodiscard]] std::string to_string() const override {
                 return "Section32Symtab";
@@ -424,7 +419,6 @@ namespace converter {
                 // (section_number, relocation_number)
                 std::vector<std::pair<Elf32_Word, Elf32_Word>> relocations;
             } storage;
-            size_t num_symbols_added = 0;
 
             explicit Elf32(elf64::Elf64 const& elf64, func_spec::Functions const& functions);
 

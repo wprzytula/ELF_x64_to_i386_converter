@@ -1,2 +1,4 @@
-.idea
+tests
 cmake-build-debug
+docs
+.idea
