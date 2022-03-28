@@ -83,27 +83,13 @@ namespace converter::elf32 {
         r_offset = rela32.r_offset;
         r_info = rela32.r_info;
         try {
-            auto const& symtab = dynamic_cast<Section32Symtab const&>(*sections[section32_rela.header.sh_link]);
-            auto const& symbol = symtab.symbols[ELF32_R_SYM(r_info)];
+            auto& rel_section = dynamic_cast<Section32WithFixedSizeData&>(*sections[section32_rela.header.sh_info]);
+            using addend_t = std::remove_const_t<decltype(rela32.r_addend)>;
 
-            if (ELF32_ST_TYPE(symbol.st_info) != STT_NOTYPE) {
-                try {
-                    auto& rel_section = dynamic_cast<Section32WithFixedSizeData&>(*sections[section32_rela.header.sh_info]);
-                    using addend_t = std::remove_const_t<decltype(rela32.r_addend)>;
-
-//                        std::cout << "r_offset=" << r_offset << ", section_size=" << rel_section.header.sh_size << "\n";
-                    auto& addr = reinterpret_cast<addend_t&>(rel_section.data.get()[r_offset]);
-
-//                        std::cout << "Before addr=" << addr << "; addend=" << rela32.r_addend << "; ";
-                    addr += rela32.r_addend;
-//                        std::cout << "after addr=" << addr << '\n';
-
-                } catch (std::bad_cast const&) {
-                    throw UnsupportedFileContent{"Rela section " + std::to_string(section32_rela.header.sh_info) + " is bound to section without data."};
-                }
-            }
+            auto& addr = reinterpret_cast<addend_t&>(rel_section.data.get()[r_offset]);
+            addr += rela32.r_addend;
         } catch (std::bad_cast const&) {
-            throw UnsupportedFileContent{"Section referenced in Rela section is not a Symtab section."};
+            throw UnsupportedFileContent{"Rela section " + std::to_string(section32_rela.header.sh_info) + " is bound to section without data."};
         }
     }
 
