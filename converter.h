@@ -391,7 +391,7 @@ namespace converter {
                 : Section32WithGrowableData{header} {}
         public:
 
-            static Section32Thunk make_thunk(Section32 const& thunked_section, size_t symtab_idx,
+            static Section32Thunk make_thunk(std::string const& thunk_section_name, size_t symtab_idx,
                                              Section32Strtab& strtab, std::string const& name);
 
             [[nodiscard]] size_t add_thunk(const std::vector<uint8_t>& stub);
@@ -400,15 +400,15 @@ namespace converter {
         struct Section32Thunkin final : public Section32Thunk {
             ~Section32Thunkin() override = default;
             Section32Thunkin(Section32Thunkin&& section) = default;
-            explicit Section32Thunkin(Section32 const& thunked_section, size_t const symtab_idx, Section32Strtab& strtab)
-                : Section32Thunk{make_thunk(thunked_section, symtab_idx, strtab, ".thunkin")} {}
+            explicit Section32Thunkin(std::string const& thunked_section_name, size_t const symtab_idx, Section32Strtab& strtab)
+                : Section32Thunk{make_thunk(thunked_section_name, symtab_idx, strtab, ".thunkin")} {}
         };
 
         struct Section32Thunkout final : public Section32Thunk {
             ~Section32Thunkout() override = default;
             Section32Thunkout(Section32Thunkout&& section) = default;
-            explicit Section32Thunkout(Section32 const& thunked_section, size_t const symtab_idx, Section32Strtab& strtab)
-            : Section32Thunk{make_thunk(thunked_section, symtab_idx, strtab, ".thunkout")} {}
+            explicit Section32Thunkout(std::string const& thunked_section_name, size_t const symtab_idx, Section32Strtab& strtab)
+            : Section32Thunk{make_thunk(thunked_section_name, symtab_idx, strtab, ".thunkout")} {}
         };
 
         struct Elf32 {
@@ -436,7 +436,6 @@ namespace converter {
         };
 
         struct Symbol64 : Elf64_Sym {
-            bool special_section;
             explicit Symbol64(std::ifstream &elf_stream);
         };
 
@@ -452,7 +451,6 @@ namespace converter {
             Section64(Section64&& section) = default;
             virtual ~Section64() = default;
 
-            [[nodiscard]] char const* name(Section64Strtab const &str_table) const;
             static std::unique_ptr<Section64> parse_section(std::ifstream& elf_stream, Elf64_Ehdr const& elf_header);
         };
 

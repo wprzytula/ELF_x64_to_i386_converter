@@ -56,7 +56,6 @@ namespace converter::elf64 {
         read_to_field(elf_stream, st_shndx);
         read_to_field(elf_stream, st_value);
         read_to_field(elf_stream, st_size);
-        special_section = st_shndx >= 0xff00;
     }
 
     Rela64::Rela64(std::ifstream &elf_stream) : Elf64_Rela{} {
