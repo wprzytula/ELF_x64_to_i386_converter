@@ -318,7 +318,8 @@ namespace converter::elf32 {
         return header.sh_size;
     }
 
-    Elf32_Word Section32Symtab::add_symbol(Symbol32 const symbol) {
+    Elf32_Word Section32Symtab::add_symbol(Symbol32 const symbol, size_t& counter) {
+        ++counter;
         auto pos = symbols.size();
         symbols.push_back(symbol);
         if (ELF32_ST_BIND(symbol.st_info) == STB_LOCAL) {
@@ -328,8 +329,8 @@ namespace converter::elf32 {
     }
 
     Elf32_Word Section32Symtab::register_section(Section32 const& section, Elf32_Word const section_idx,
-                                                 Elf32_Word const section_name_idx) {
-        return add_symbol(Symbol32::for_section(section, section_idx, section_name_idx));
+                                                 Elf32_Word const section_name_idx, size_t& counter) {
+        return add_symbol(Symbol32::for_section(section, section_idx, section_name_idx), counter);
     }
 
     Section32Rela::Section32Rela(elf64::Section64Rela const& rela64) : Section32{rela64} {
@@ -464,8 +465,12 @@ namespace converter::elf32 {
         // RELA into REL conversion:
         convert_relocations();
 
+        store_and_move_global_symbols(functions);
+
         // Symbols conversions:
         convert_symbols(functions);
+
+        restore_global_symbols();
 
         correct_offsets();
     }
@@ -487,20 +492,68 @@ namespace converter::elf32 {
         }
     }
 
+    void Elf32::store_and_move_global_symbols(func_spec::Functions const& functions) {
+        // (symbol_idx -> moveback)
+        std::map<Elf32_Word, Elf32_Word> symbol_moveback;
+
+        for (auto const& section : sections) { // looking for symtabs
+            auto*const symtab = dynamic_cast<Section32Symtab*>(section.get());
+
+            if (symtab != nullptr) { // found SYMTAB
+                auto const symbols_size_before_conversion = symtab->symbols.size();
+                auto& symstrtab = dynamic_cast<Section32Strtab&>(*sections[symtab->strtab()]);
+
+                for (Elf32_Word symbol_idx = symtab->header.sh_info; symbol_idx < symbols_size_before_conversion; ++symbol_idx) {
+                    Symbol32& symbol = symtab->symbols[symbol_idx];
+                    auto bind = ELF32_ST_BIND(symbol.st_info);
+                    auto type = ELF32_ST_TYPE(symbol.st_info);
+                    auto name = symstrtab.name_of(symbol.st_name);
+
+                    if (bind == STB_GLOBAL || bind == STB_WEAK) {
+                        if ((type == STT_FUNC) || (type == STT_NOTYPE && functions.find(name) != functions.end())) {
+                            // prepares the symbol to be moved back
+                            Elf32_Word const moveback = storage.symbols.size();
+                            symtab->symbols[symbol_idx - moveback] = symbol;
+                        } else {
+                            // store the symbol and associated relocations
+                            storage.symbols.emplace(symbol_idx, symbol);
+                        }
+                    }
+                }
+                size_t const num_removed = storage.symbols.size();
+                symtab->symbols.erase(symtab->symbols.end() - static_cast<long>(num_removed), symtab->symbols.end());
+            }
+        }
+        for (Elf32_Word section_idx = 0; section_idx < sections.size(); ++section_idx) { // looking for reltabs
+            Section32* section = sections[section_idx].get();
+            auto* const reltab = dynamic_cast<Section32Rel*>(section);
+
+            if (reltab != nullptr) { // found REL section
+                for (Elf32_Word rel_idx = 0; rel_idx < reltab->relocations.size(); ++rel_idx) {
+                    Rel32& rel = reltab->relocations[rel_idx];
+                    auto sym = ELF32_R_SYM(rel.r_info);
+
+                    if (storage.symbols.contains(sym)) {
+                        // store the symbol and associated relocations
+                        storage.relocations.emplace_back(section_idx, rel_idx);
+                    }
+                    auto it = symbol_moveback.find(sym);
+                    if (it != symbol_moveback.end()) {
+                        // instantly fix relocations
+                        auto type = ELF32_R_TYPE(rel.r_info);
+                        rel.r_info = ELF32_R_INFO(sym - it->second, type);
+                    }
+                }
+            }
+        }
+    }
+
     void Elf32::convert_symbols(func_spec::Functions const& functions) {
         struct Indices {
             Elf32_Word thunk;
             Elf32_Word rel_thunk;
             Elf32_Word symbol;
         };
-
-        Elf32_Word text_section_idx = 0;
-        for (Elf32_Word i = 0; i < sections.size(); ++i) {
-            if (sections[i]->header.sh_type == SHT_PROGBITS && sections[i]->header.sh_flags == (SHF_ALLOC | SHF_EXECINSTR)) {
-                text_section_idx = i;
-            }
-        }
-        if (text_section_idx == 0) throw UnsupportedFileContent{"No .text section!"};
 
         try {
             std::optional<Indices> thunkin_section_idcs, thunkout_section_idcs;
@@ -543,8 +596,10 @@ namespace converter::elf32 {
 
                                 auto thunkin_section = std::make_unique<Section32Thunkin>(thunked_section_name, symtab_idx, *shstrtab);
                                 auto thunkin_section_name_idx = symstrtab.append_name(thunked_section_name + std::string{".thunkin"});
-                                thunkin_section_symbol_idx = symtab->register_section(*thunkin_section, thunkin_section_idx,
-                                                                                   thunkin_section_name_idx);
+                                thunkin_section_symbol_idx = symtab->register_section(*thunkin_section,
+                                                                                      thunkin_section_idx,
+                                                                                      thunkin_section_name_idx,
+                                                                                      num_symbols_added);
 
                                 thunkin_section_idcs = std::make_optional<>(
                                         Indices{.thunk=thunkin_section_idx, .rel_thunk=rel_thunkin_section_idx, .symbol=thunkin_section_symbol_idx});
@@ -606,8 +661,10 @@ namespace converter::elf32 {
                                     auto thunkout_section = std::make_unique<Section32Thunkout>(thunked_section_name, symtab_idx, *shstrtab);
 
                                     auto thunkout_section_name_idx = symstrtab.append_name(thunked_section_name + std::string{".thunkout"});
-                                    thunkout_section_symbol_idx = symtab->register_section(*thunkout_section, thunkout_section_idx,
-                                                                                       thunkout_section_name_idx);
+                                    thunkout_section_symbol_idx = symtab->register_section(*thunkout_section,
+                                                                                           thunkout_section_idx,
+                                                                                           thunkout_section_name_idx,
+                                                                                           num_symbols_added);
 
                                     thunkout_section_idcs = std::make_optional<>(
                                             Indices{.thunk=thunkout_section_idx, .rel_thunk=rel_thunkout_section_idx, .symbol=thunkout_section_symbol_idx});
@@ -627,7 +684,8 @@ namespace converter::elf32 {
                                 }
 
                                 // add new undefined global symbol, mimicking the altered one.
-                                auto global_symbol_idx = symtab->add_symbol(Symbol32::global_ref(symbol));
+                                auto global_symbol_idx = symtab->add_symbol(Symbol32::global_ref(symbol),
+                                                                            num_symbols_added);
 
                                 // alter the former symbol: make it local and pointing to .thunkout section.
                                 symbol.st_info = ELF32_ST_INFO(STB_LOCAL, type);
@@ -657,7 +715,7 @@ namespace converter::elf32 {
             for (auto& [symtab_idx, symbols]: global_symbols_to_be_added) {
                 auto& symtab = dynamic_cast<Section32Symtab&>(*sections[symtab_idx]);
                 for (Symbol32 const symbol: symbols) {
-                    auto symbol_idx = symtab.add_symbol(symbol);
+                    auto symbol_idx = symtab.add_symbol(symbol, num_symbols_added);
                 }
             }
         } catch (std::bad_cast const&) {
@@ -680,6 +738,25 @@ namespace converter::elf32 {
         /* - 3rd case: calling our functions from our functions (both 64-bit):
          * - no stubs needed */
 
+    }
+
+    void Elf32::restore_global_symbols() {
+        size_t fake_counter;
+        for (auto const& section : sections) { // looking for symtabs
+            auto* const symtab = dynamic_cast<Section32Symtab*>(section.get());
+            if (symtab != nullptr) { // found SYMTAB
+                for (auto const [_, symbol] : storage.symbols) {
+                    symtab->add_symbol(symbol, fake_counter);
+                }
+            }
+        }
+        for (auto const& [section_idx, rel_idx] : storage.relocations) {
+            auto& reltab = dynamic_cast<Section32Rel&>(*sections[section_idx]);
+            Rel32& rel = reltab.relocations[rel_idx];
+            auto sym = ELF32_R_SYM(rel.r_info);
+            auto type = ELF32_R_TYPE(rel.r_info);
+            rel.r_info = ELF32_R_INFO(sym + num_symbols_added, type);
+        }
     }
 
     void Elf32::correct_offsets() {

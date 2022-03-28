@@ -9,6 +9,7 @@
 #include <set>
 #include <deque>
 #include <optional>
+#include <map>
 
 #define read_to_field(ifstream, field) ifstream.read(reinterpret_cast<char*>(&(field)), sizeof(field))
 #define write_from_field(elf_stream, field) elf_stream.write(reinterpret_cast<char const*>(&(field)), sizeof(field))
@@ -326,9 +327,10 @@ namespace converter {
                 return header.sh_link;
             }
 
-            Elf32_Word add_symbol(Symbol32 symbol);
+            Elf32_Word add_symbol(Symbol32 symbol, size_t& counter);
 
-            Elf32_Word register_section(Section32 const& section, Elf32_Word section_idx, Elf32_Word section_name_idx);
+            Elf32_Word register_section(Section32 const& section, Elf32_Word section_idx,
+                                        Elf32_Word section_name_idx, size_t& counter);
 
             [[nodiscard]] std::string to_string() const override {
                 return "Section32Symtab";
@@ -416,13 +418,25 @@ namespace converter {
             sections32_t sections;
             Section32Strtab*const shstrtab;
 
+            struct GlobalSymbolsStorage {
+                // (symbol_number -> symbol)
+                std::map<Elf32_Word, Symbol32> symbols;
+                // (section_number, relocation_number)
+                std::vector<std::pair<Elf32_Word, Elf32_Word>> relocations;
+            } storage;
+            size_t num_symbols_added = 0;
+
             explicit Elf32(elf64::Elf64 const& elf64, func_spec::Functions const& functions);
 
             void add_new_section(std::unique_ptr<Section32> section);
 
             void convert_relocations();
 
+            void store_and_move_global_symbols(func_spec::Functions const& functions);
+
             void convert_symbols(func_spec::Functions const& functions);
+
+            void restore_global_symbols();
 
             void correct_offsets();
 
