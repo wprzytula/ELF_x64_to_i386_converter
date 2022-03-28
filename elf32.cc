@@ -355,13 +355,6 @@ namespace converter::elf32 {
         return header.sh_size;
     }
 
-    /*void Section32Rela::write_out_data(std::ofstream& elf_file, size_t& offset) const {
-        Section32::write_out_data(elf_file, offset);
-        for (auto const& relocation: relocations) {
-            relocation.write_out(elf_file, offset);
-        }
-    }*/
-
     Section32Rel::Section32Rel(Section32Rela const& rela32, sections32_t& sections, Section32Strtab& shstrtab)
             : Section32{rela32.header} {
         for (auto const& relocation: rela32.relocations) {
