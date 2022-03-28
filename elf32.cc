@@ -4,6 +4,7 @@
 #include <iostream>
 #include <optional>
 #include <map>
+#include <cstring>
 
 namespace converter::elf32 {
     namespace {
@@ -377,13 +378,16 @@ namespace converter::elf32 {
         }
     }*/
 
-    Section32Rel::Section32Rel(Section32Rela const& rela32, sections32_t& sections) : Section32{rela32.header} {
+    Section32Rel::Section32Rel(Section32Rela const& rela32, sections32_t& sections, Section32Strtab& shstrtab)
+            : Section32{rela32.header} {
         for (auto const& relocation: rela32.relocations) {
             relocations.emplace_back(relocation, rela32, sections);
         }
         header.sh_type = SHT_REL;
         header.sh_entsize = sizeof(Elf32_Rel);
         header.sh_size = sizeof(Elf32_Rel) * relocations.size();
+
+        memcpy(shstrtab.data.data() + header.sh_name++, "\0.rel", 5);
     }
 
     void Section32Rel::write_out_data(std::ofstream& elf_file, size_t& offset) {
@@ -526,7 +530,7 @@ namespace converter::elf32 {
             auto*const cast = dynamic_cast<Section32Rela*>(section.get());
             if (cast != nullptr) {
                 std::cout << "Creating new Section32Rel\n";
-                std::unique_ptr<Section32> temp_unique = std::make_unique<Section32Rel>(Section32Rel{*cast, sections});
+                std::unique_ptr<Section32> temp_unique = std::make_unique<Section32Rel>(Section32Rel{*cast, sections, *shstrtab});
                 assert(dynamic_cast<Section32Rel*>(temp_unique.get()) != nullptr);
 
                 section.swap(temp_unique);
