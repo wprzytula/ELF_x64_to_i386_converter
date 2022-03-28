@@ -403,7 +403,7 @@ namespace converter {
                 return "Section32Rel";
             }
 
-            explicit Section32Rel(Section32Rela const& rela32, sections32_t& sections);
+            explicit Section32Rel(Section32Rela const& rela32, sections32_t& sections, Section32Strtab& shstrtab);
         private:
             explicit Section32Rel(Elf32_Shdr const& header) : Section32{header} {}
         public:
