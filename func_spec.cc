@@ -45,7 +45,7 @@ namespace converter::func_spec {
         return std::make_optional<>(Arg::parse_arg_type(argtype));
     }
 
-    Function Function::from_line_decl(std::string& decl) {
+    Function Function::from_line_decl(std::string const& decl) {
         std::istringstream iss{decl};
 
         std::string name;

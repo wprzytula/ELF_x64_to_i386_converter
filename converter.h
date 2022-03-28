@@ -63,7 +63,7 @@ namespace converter {
             std::vector<Arg> const args;
 
             explicit Function(std::string name, Ret ret, std::vector<Arg> args) : name{std::move(name)}, ret{std::move(ret)}, args{std::move(args)} {}
-            static Function from_line_decl(std::string& decl);
+            static Function from_line_decl(std::string const& decl);
 
             struct order {
                 using is_transparent = void;
@@ -92,32 +92,6 @@ namespace converter {
 
             [[nodiscard]] decltype(functions.end()) end() const {
                 return functions.end();
-            }
-
-//          debug only
-            void print() {
-                for (auto const& function : functions) {
-                    printf("Function: ret=%d, name=%s, args:",
-                           function.ret.ret.has_value() ? static_cast<int>(function.ret.ret.value()) : -1,
-                           function.name.c_str()
-                    );
-                    for (auto const& arg: function.args) {
-                        printf(" %d", static_cast<int>(arg.type));
-                    }
-                    putchar('\n');
-                }
-            }
-
-            void print_one(std::string const& name) {
-                auto const& function = *functions.find(name);
-                printf("Function: ret=%d, name=%s, args:",
-                       function.ret.ret.has_value() ? static_cast<int>(function.ret.ret.value()) : -1,
-                       function.name.c_str()
-                );
-                for (auto const& arg: function.args) {
-                    printf(" %d", static_cast<int>(arg.type));
-                }
-                putchar('\n');
             }
         };
     }
