@@ -173,7 +173,7 @@ fun_addr_32to64:
                 // found .rodata
                 rodata.emplace(std::move(section64), stub_elf);
 
-                rodata_code.resize(text->header.sh_size);
+                rodata_code.resize(rodata->header.sh_size);
                 std::copy(rodata->data.get(), rodata->data.get() + rodata->header.sh_size, rodata_code.data());
 
             } else if (section64.header.sh_type == SHT_RELA) {
@@ -251,7 +251,6 @@ fun_addr_32to64:
                         : "movq";
             }
 
-//            printf("Generating take for: instr=%s, offset=%lu, reg=%s\n", instr, offset, reg);
             takes += gen_take(instr, offset, reg);
             offset += arg.bytes_32();
         }
