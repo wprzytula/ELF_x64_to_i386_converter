@@ -557,6 +557,7 @@ namespace converter::elf32 {
             std::vector<std::optional<Indices>> thunkin_section_idcs{sections.size()};
             std::vector<std::optional<Indices>> thunkout_section_idcs{sections.size()};
             std::map<size_t, std::vector<size_t>> symbols_to_be_sized;
+            std::map<size_t, std::vector<Symbol32>> global_symbols_to_be_added;
 
             for (Elf32_Word symtab_idx = 0; symtab_idx < sections.size(); ++symtab_idx) { // looking for symtabs
                 std::unique_ptr<Section32> const& section = sections[symtab_idx];
@@ -621,10 +622,6 @@ namespace converter::elf32 {
                             /* - add new global symbols: trampolines that change mode from 32-bit to 64-bit,
                              *   call original function and change mode back to 32-bit. */
 
-                            // add global symbol
-                            auto global_symbol_idx = symtab->add_symbol(Symbol32::global_stub(symbol, thunkin_section_idx));
-                            symbols_to_be_sized[symtab_idx].push_back(global_symbol_idx);
-
                             // just get references to thunk & thunk rel sections
                             auto& thunkin_section = dynamic_cast<Section32Thunkin&>(
                                     *sections[thunkin_section_idcs[symbol.related_section_idx()]->thunk]);
@@ -634,11 +631,14 @@ namespace converter::elf32 {
                             // build thunkin
                             Thunkin thunkin{func_spec, thunkin_section_symbol_idx, symbol_idx};
 
+                            // create global symbol, but not add it yet (more local symbols may yet come)
+                            Symbol32 stub_symbol = Symbol32::global_stub(symbol, thunkin_section_idx);
+
                             // - add new relocations that point from stubs to original symbols (e.g. thunk -> f)
                             // lay thunk to sections
-                            Symbol32& stub_symbol = symtab->symbols[global_symbol_idx];
                             thunkin.lay_to_sections(thunkin_section, rel_thunkin_section, stub_symbol);
 
+                            global_symbols_to_be_added[symtab_idx].push_back(stub_symbol);
                             /* Case 1: DONE? */
 
                         } else if (bind == STB_GLOBAL && type == STT_NOTYPE && functions.find(name) != functions.end()) {
@@ -713,6 +713,15 @@ namespace converter::elf32 {
                 }
             }
 
+            /* Global symbols delayed append */
+            for (auto& [symtab_idx, symbols]: global_symbols_to_be_added) {
+                auto& symtab = dynamic_cast<Section32Symtab&>(*sections[symtab_idx]);
+                for (Symbol32 const symbol: symbols) {
+                    auto symbol_idx = symtab.add_symbol(symbol);
+                    symbols_to_be_sized[symtab_idx].push_back(symbol_idx);
+                }
+            }
+
             /* New symbols size correction */
             for (auto& [symtab_idx, symbols]: symbols_to_be_sized) {
                 auto& symtab = dynamic_cast<Section32Symtab&>(*sections[symtab_idx]);
@@ -733,13 +742,11 @@ namespace converter::elf32 {
          * - adding new relocations that point from stubs to original symbols (e.g. thunk -> f)
          * */
 
-
         /* - 2nd case: calling external functions (32-bit O̶R̶ ̶6̶4̶-̶b̶i̶t̶ [crossed out because of 3.3 point of task content])
          *   from our (64-bit) code:
          * - adding new local symbols: stubs that change mode to 32-bit, call global symbols and come back to 64-bit
          * - changing relocations in the way that now they point to new symbols (stubs)
          *   instead of original external functions (e.g. [!-> fputs] => [-> thunk_fputs]) */
-
 
         /* - 3rd case: calling our functions from our functions (both 64-bit):
          * - no stubs needed */
