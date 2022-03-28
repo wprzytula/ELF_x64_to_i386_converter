@@ -83,8 +83,8 @@ fun_stub_32:
 ;# cofnięcie wyrównania stosu
     addl    $4, %%esp
 ;# zdjęcie rejestrów
-    popl   %%edi
     popl   %%esi
+    popl   %%edi
     retl
 
 fun_addr_64to32:
@@ -164,7 +164,6 @@ fun_addr_32to64:
         }
 
         std::string generate_thunkin(std::string const& takes) {
-//        printf("Takes:\n%s\n", takes.c_str());
             return string_format(thunkin_template, takes.c_str());
         }
 
@@ -172,14 +171,6 @@ fun_addr_32to64:
             return string_format(thunkout_template, args_size, movs.c_str(), args_size);
         }
 
-        /* *
-         * 00000000  57 56 83 ec 04 ff 2d 00  00 00 00 48 63 7c 24 10
-         * 00000010  48 63 74 24 14 48 63 54  24 18 48 63 4c 24 1c 4c
-         * 00000020  63 44 24 20 4c 63 4c 24  24 e8 00 00 00 00 48 89
-         * 00000030  c2 48 c1 ea 20 ff 2c 25  00 00 00 00 83 c4 04 5e
-         * 00000040  5f c3 00 00 00 00 23 00  00 00 00 00 00 00 33 00
-         * 00000050  00 00
-         * */
         unsigned char const thunkin_code[] = {
                 /* 00 */   0x57, 0x56, 0x83, 0xec, 0x04, 0xff, 0x2d, 0x00, // 7: R_X86_64_32        .text+0x4a
                 /* 08 */   0x00, 0x00, 0x00, 0x48, 0x63, 0x7c, 0x24, 0x10,
@@ -200,14 +191,6 @@ fun_addr_32to64:
         addend = static_cast<decltype(addend)>(rela64.r_addend);
         offset = static_cast<decltype(offset)>(rela64.r_offset);
     }
-
-    /*std::vector<ThunkPreRel32> relocations {
-            {.local_symbol=false, .offset=0x7,   .addend=0x4a},
-            {.local_symbol=true,  .offset=0x2a,  .addend=-0x4},
-            {.local_symbol=false, .offset=0x38,  .addend=0x42},
-            {.local_symbol=false, .offset=0x42,  .addend=0x3c},
-            {.local_symbol=false, .offset=0x4a,  .addend=0xb },
-    };*/
 
     Stub::Stub(std::ifstream& stub_elf) {
         Elf64_Ehdr header;
@@ -270,12 +253,15 @@ fun_addr_32to64:
         for (uint32_t i = 0; i < func_spec.args.size(); ++i) {
             auto const& arg = func_spec.args[i];
 
-            char const*const reg = (arg.bytes_64() == 8 ? registers64 : registers32)[i];
+            char const*const reg = (arg.bytes_64() == 4 || (arg.size_differs() && !arg.is_signed())
+                                    ? registers32
+                                    : registers64
+            )[i];
             char const* instr;
             if (arg.size_differs()) {
                 instr = arg.is_signed()
                         ? "movslq"
-                        : "movzlq";
+                        : "movl";
             } else {
                 instr = arg.bytes_32() == 4
                         ? "movl"

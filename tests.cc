@@ -7,9 +7,13 @@ int main() {
 
     Function fun_void{"fun", Ret{"void"}, {}};
 
+    Function f{"f", Ret{"int"}, {{"int"}, {"int"}}};
+
+//    Function p{"f", Ret{"int"}, {{"int"}, {"int"}}};
+
 //    std::cout << converter::stubs::Stub::asmin(fun);
 
 //    std::cout << converter::stubs::Stub::asmin(fun_void);
 
-    std::cout << converter::stubs::Stub::asmout(fun);
+    std::cout << converter::stubs::Stub::asmin(f);
 }
