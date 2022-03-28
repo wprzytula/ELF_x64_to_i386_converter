@@ -418,7 +418,7 @@ namespace converter::elf32 {
                 .sh_size = 0, // so far
                 .sh_link = symtab_idx,
                 .sh_info = thunk_section_idx,
-                .sh_addralign = 1,
+                .sh_addralign = 8,
                 .sh_entsize = sizeof(Elf32_Rel),
         };
 
@@ -446,7 +446,7 @@ namespace converter::elf32 {
                 .sh_size = 0, // so far
                 .sh_link = 0,
                 .sh_info = 0,
-                .sh_addralign = 1,
+                .sh_addralign = 8,
                 .sh_entsize = 0
         };
 
