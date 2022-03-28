@@ -168,6 +168,7 @@ namespace converter::elf32 {
                                 Symbol32& thunk_symbol) {
         size_t thunk_pos = thunk_section.add_thunk(code);
         thunk_symbol.st_value = thunk_pos;
+        thunk_symbol.st_size = code.size();
 
         for (auto& rel: relocations) {
             rel.r_offset += thunk_pos;
@@ -506,7 +507,6 @@ namespace converter::elf32 {
         try {
             std::vector<std::optional<Indices>> thunkin_section_idcs{sections.size()};
             std::vector<std::optional<Indices>> thunkout_section_idcs{sections.size()};
-            std::map<size_t, std::vector<size_t>> symbols_to_be_sized;
             std::map<size_t, std::vector<Symbol32>> global_symbols_to_be_added;
 
             for (Elf32_Word symtab_idx = 0; symtab_idx < sections.size(); ++symtab_idx) { // looking for symtabs
@@ -514,7 +514,6 @@ namespace converter::elf32 {
                 auto* symtab = dynamic_cast<Section32Symtab*>(section.get());
 
                 if (symtab != nullptr) { // found SYMTAB
-                    symbols_to_be_sized[symtab_idx] = {};
                     auto symbols_size_before_conversion = symtab->symbols.size();
 
                     for (Elf32_Word symbol_idx = 0; symbol_idx < symbols_size_before_conversion; ++symbol_idx) {
@@ -641,7 +640,6 @@ namespace converter::elf32 {
                                 // alter the former symbol: make it local and pointing to .thunkout section.
                                 symbol.st_info = ELF32_ST_INFO(STB_LOCAL, type);
                                 symbol.st_shndx = thunkout_section_idx;
-                                symbols_to_be_sized[symtab_idx].push_back(symbol_idx);
 
                                 // just get references to thunk & thunk rel sections
                                 auto& thunkout_section = dynamic_cast<Section32Thunkout&>(
@@ -668,17 +666,6 @@ namespace converter::elf32 {
                 auto& symtab = dynamic_cast<Section32Symtab&>(*sections[symtab_idx]);
                 for (Symbol32 const symbol: symbols) {
                     auto symbol_idx = symtab.add_symbol(symbol);
-                    symbols_to_be_sized[symtab_idx].push_back(symbol_idx);
-                }
-            }
-
-            /* New symbols size correction */
-            for (auto& [symtab_idx, symbols]: symbols_to_be_sized) {
-                auto& symtab = dynamic_cast<Section32Symtab&>(*sections[symtab_idx]);
-                for (auto const symbol_idx: symbols) {
-                    auto& symbol = symtab.symbols[symbol_idx];
-                    auto& sized_section = *sections[symbol.st_shndx];
-                    symbol.st_size = sized_section.size();
                 }
             }
         } catch (std::bad_cast const&) {
