@@ -190,8 +190,6 @@ namespace converter {
 
         struct Rela32 : Elf32_Rela {
             explicit Rela32(elf64::Rela64 const& rela64);
-
-//            void write_out(std::ofstream& ofstream, size_t& i) const; // FIXME: remove
         };
 
         struct Rel32 : Elf32_Rel {
