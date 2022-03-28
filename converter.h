@@ -420,7 +420,7 @@ namespace converter {
             static Section32Thunk make_thunk(Section32 const& thunked_section, size_t symtab_idx,
                                              Section32Strtab& strtab, std::string const& name);
 
-            [[nodiscard]] size_t add_thunk(std::vector<uint8_t> stub);
+            [[nodiscard]] size_t add_thunk(const std::vector<uint8_t>& stub);
         };
 
         struct Section32Thunkin final : public Section32Thunk {

@@ -68,7 +68,6 @@ namespace converter::func_spec {
     }
 
     Functions::Functions(std::ifstream& func_stream) {
-//            constexpr size_t const LINE_MAX_LEN = 100;
         std::string buff;
         while (!func_stream.eof()) {
             std::getline(func_stream, buff);

@@ -192,11 +192,11 @@ namespace converter::elf32 {
         header.sh_type = section64.header.sh_type; //  == SHT_RELA ? SHT_REL : section64.header.sh_type;
         header.sh_flags = section64.header.sh_flags;
         header.sh_addr = section64.header.sh_addr;
-        header.sh_offset = 0; // static_cast<unsigned int>(-1); // will be set later
+        header.sh_offset = 0; // will be set later
         header.sh_size = section64.header.sh_size;
         header.sh_link = section64.header.sh_link;
         header.sh_info = section64.header.sh_info;
-        header.sh_addralign = section64.header.sh_addralign; // FIXME: for sure?
+        header.sh_addralign = section64.header.sh_addralign;
         header.sh_entsize = section64.header.sh_entsize;
 
         // TODO
@@ -252,9 +252,7 @@ namespace converter::elf32 {
     }
 
     Section32WithoutData::Section32WithoutData(elf64::Section64WithoutData const& section64)
-            : Section32(section64) {
-        // pass
-    }
+            : Section32(section64) {}
 
     size_t Section32WithoutData::size() {
         return 0;
@@ -411,9 +409,10 @@ namespace converter::elf32 {
         return Section32Rel{header};
     }
 
-    size_t Section32Thunk::add_thunk(std::vector<uint8_t> stub) {
+    size_t Section32Thunk::add_thunk(std::vector<uint8_t> const& stub) {
         auto const pos = data.size();
-        data = std::move(stub);
+        data.resize(data.size() + stub.size());
+        std::copy(stub.cbegin(), stub.cend(), data.data() + pos);
         return pos;
     }
 
