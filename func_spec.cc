@@ -45,7 +45,7 @@ namespace converter::func_spec {
         return std::make_optional<>(Arg::parse_arg_type(argtype));
     }
 
-    Function Function::from_line_decl(std::string& decl) {
+    Function Function::from_line_decl(std::string const& decl) {
         std::istringstream iss{decl};
 
         std::string name;
@@ -68,7 +68,6 @@ namespace converter::func_spec {
     }
 
     Functions::Functions(std::ifstream& func_stream) {
-//            constexpr size_t const LINE_MAX_LEN = 100;
         std::string buff;
         while (!func_stream.eof()) {
             std::getline(func_stream, buff);

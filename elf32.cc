@@ -68,16 +68,10 @@ namespace converter::elf32 {
                     throw UnsupportedFileContent{"Unsupported relocation type: " + std::to_string(r64_type)};
             }
         }();
-//            printf("\nConverted relocation type=%u, sym=%u into type=%lu, sym=%u\n", r_type, r_sym, ELF64_R_TYPE(rela64.r_info), r_sym);
         r_info = ELF32_R_INFO(r_sym, r_type);
         r_addend = static_cast<decltype(r_addend)>(rela64.r_addend);
 
     }
-
-    /*void Rela32::write_out(std::ofstream& elf_file, size_t& offset) const {
-        static_assert(sizeof(*this) == sizeof(Elf32_Rela));
-        write_from_field(elf_file, *this);
-    }*/
 
     Rel32::Rel32(Rela32 const& rela32, Section32Rela const& section32_rela, sections32_t& sections) : Elf32_Rel{} {
         r_offset = rela32.r_offset;
@@ -104,12 +98,12 @@ namespace converter::elf32 {
     }
 
     Rel32 Rel32::thunk_self_ref(Elf32_Addr const offset, Elf32_Word const self_symbol_idx) {
-        printf("Constructing Rel32: offset=%u, type=self, symbol_idx=%u\n", offset, self_symbol_idx);
+//        printf("Constructing Rel32: offset=%u, type=self, symbol_idx=%u\n", offset, self_symbol_idx);
         return Rel32{offset, R_386_32, self_symbol_idx};
     }
 
     Rel32 Rel32::func_ref(Elf32_Addr const offset, Elf32_Word const func_symbol_idx) {
-        printf("Constructing Rel32: offset=%u, type=func, symbol_idx=%u\n", offset, func_symbol_idx);
+//        printf("Constructing Rel32: offset=%u, type=func, symbol_idx=%u\n", offset, func_symbol_idx);
         return Rel32{offset, R_386_PC32, func_symbol_idx};
     }
 
@@ -183,9 +177,11 @@ namespace converter::elf32 {
     void Thunk::lay_to_sections(Section32Thunk& thunk_text_section, Section32Rel& rel_thunk_text_section,
                                 Section32Thunk& thunk_rodata_section, Section32Rel& rel_thunk_rodata_section,
                                 Symbol32& thunk_symbol) {
-        size_t thunk_text_pos = thunk_text_section.add_thunk(std::move(text_code));
-        size_t thunk_rodata_pos = thunk_rodata_section.add_thunk(std::move(rodata_code));
+
+        size_t thunk_text_pos = thunk_text_section.add_thunk(text_code);
+        size_t thunk_rodata_pos = thunk_rodata_section.add_thunk(rodata_code);
         thunk_symbol.st_value = thunk_text_pos;
+        thunk_symbol.st_size = text_code.size();
 
         for (auto& rel: text_relocations) {
             rel.r_offset += thunk_text_pos;
@@ -208,14 +204,14 @@ namespace converter::elf32 {
 
     Section32::Section32(elf64::Section64 const &section64) {
         header.sh_name = section64.header.sh_name;
-        header.sh_type = section64.header.sh_type; //  == SHT_RELA ? SHT_REL : section64.header.sh_type;
+        header.sh_type = section64.header.sh_type;
         header.sh_flags = section64.header.sh_flags;
         header.sh_addr = section64.header.sh_addr;
-        header.sh_offset = 0; // static_cast<unsigned int>(-1); // will be set later
+        header.sh_offset = 0; // will be set later
         header.sh_size = section64.header.sh_size;
         header.sh_link = section64.header.sh_link;
         header.sh_info = section64.header.sh_info;
-        header.sh_addralign = section64.header.sh_addralign; // FIXME: for sure?
+        header.sh_addralign = section64.header.sh_addralign;
         header.sh_entsize = section64.header.sh_entsize;
 
         // TODO
@@ -257,23 +253,18 @@ namespace converter::elf32 {
     }
 
     void Section32::write_out_data(std::ofstream& elf_file, size_t& offset) {
-//            printf("(before alignment = %lx) ", offset);
         align_offset(offset, elf_file);
-//            printf("writing at offset %lx\n", offset);
     }
 
     void Section32::write_out_header(std::ofstream& elf_file, size_t& offset) const {
         // section headers alignment
         align_offset_to(offset, 8, elf_file);
-//            printf("Writing out header at offset %lx\n", offset);
         write_from_field(elf_file, header);
         offset += sizeof(header);
     }
 
     Section32WithoutData::Section32WithoutData(elf64::Section64WithoutData const& section64)
-            : Section32(section64) {
-        // pass
-    }
+            : Section32(section64) {}
 
     size_t Section32WithoutData::size() {
         return 0;
@@ -317,7 +308,6 @@ namespace converter::elf32 {
             : Section32WithGrowableData{strtab64} {}
 
     Elf32_Word Section32Strtab::append_name(std::string const& name) {
-        printf("Appending name %s to strtab.\n", name.c_str());
         for (char c: name) {
             data.push_back(c);
         }
@@ -359,7 +349,6 @@ namespace converter::elf32 {
 
     Elf32_Word Section32Symtab::register_section(Section32 const& section, Elf32_Word const section_idx,
                                                  Elf32_Word const section_name_idx) {
-        // TODO: add name to shstrtab -> done elsewhere
         return add_symbol(Symbol32::for_section(section, section_idx, section_name_idx));
     }
 
@@ -375,13 +364,6 @@ namespace converter::elf32 {
         header.sh_size = sizeof(Elf32_Rela) * relocations.size();
         return header.sh_size;
     }
-
-    /*void Section32Rela::write_out_data(std::ofstream& elf_file, size_t& offset) const {
-        Section32::write_out_data(elf_file, offset);
-        for (auto const& relocation: relocations) {
-            relocation.write_out(elf_file, offset);
-        }
-    }*/
 
     Section32Rel::Section32Rel(Section32Rela const& rela32, sections32_t& sections, Section32Strtab& shstrtab)
             : Section32{rela32.header} {
@@ -411,7 +393,6 @@ namespace converter::elf32 {
                                               Section32Strtab& strtab, Elf32_Word const symtab_idx) {
         std::string rel_section_name{".rel"};
         rel_section_name += strtab.name_of(thunk_section.header.sh_name);
-        printf("Making Section32Rel for thunk: %s\n", rel_section_name.c_str());
         Elf32_Word name_idx = strtab.append_name(rel_section_name);
 
         Elf32_Shdr header{
@@ -430,9 +411,10 @@ namespace converter::elf32 {
         return Section32Rel{header};
     }
 
-    size_t Section32Thunk::add_thunk(std::vector<uint8_t> stub) {
+    size_t Section32Thunk::add_thunk(std::vector<uint8_t> const& stub) {
         auto const pos = data.size();
-        data = std::move(stub);
+        data.resize(data.size() + stub.size());
+        std::copy(stub.cbegin(), stub.cend(), data.data() + pos);
         return pos;
     }
 
@@ -492,7 +474,6 @@ namespace converter::elf32 {
                   return _sections;
               }()},
               shstrtab{[](Section32* section){
-                  std::cout << section->type() << '\n';
                   auto _strtab = dynamic_cast<Section32Strtab*>(section);
                   if (_strtab == nullptr) {
                       throw UnsupportedFileContent{"Strtab given in the ELF header is not valid."};
@@ -500,23 +481,12 @@ namespace converter::elf32 {
                   return _strtab;
               }(sections[header.e_shstrndx].get())} {
 
-        /*for (auto const& section: sections) {
-            std::cout << section->type() << "\t: ";
-            std::cout << std::flush;
-            std::cout << section->to_string() << '\n';
-        }*/
-
-        std::cout << "###############################\nBegin relocation conversion\n";
-
         // RELA into REL conversion:
         convert_relocations();
-
-        std::cout << "\nConverting symbols.\n";
 
         // Symbols conversions:
         convert_symbols(functions);
 
-        std::cout << "\nCorrecting offsets.\n";
         correct_offsets();
     }
 
@@ -527,12 +497,8 @@ namespace converter::elf32 {
 
     void Elf32::convert_relocations() {
         for (auto& section: sections) {
-            std::cout << section->type() << "\t: ";
-            std::cout << std::flush;
-            std::cout << section->to_string() << '\n';
             auto*const cast = dynamic_cast<Section32Rela*>(section.get());
             if (cast != nullptr) {
-                std::cout << "Creating new Section32Rel\n";
                 std::unique_ptr<Section32> temp_unique = std::make_unique<Section32Rel>(Section32Rel{*cast, sections, *shstrtab});
                 assert(dynamic_cast<Section32Rel*>(temp_unique.get()) != nullptr);
 
@@ -562,7 +528,6 @@ namespace converter::elf32 {
         try {
             std::vector<std::optional<Indices>> thunkin_section_idcs{sections.size()};
             std::vector<std::optional<Indices>> thunkout_section_idcs{sections.size()};
-            std::map<size_t, std::vector<size_t>> symbols_to_be_sized;
             std::map<size_t, std::vector<Symbol32>> global_symbols_to_be_added;
 
             for (Elf32_Word symtab_idx = 0; symtab_idx < sections.size(); ++symtab_idx) { // looking for symtabs
@@ -570,7 +535,6 @@ namespace converter::elf32 {
                 auto* symtab = dynamic_cast<Section32Symtab*>(section.get());
 
                 if (symtab != nullptr) { // found SYMTAB
-                    symbols_to_be_sized[symtab_idx] = {};
                     auto symbols_size_before_conversion = symtab->symbols.size();
 
                     for (Elf32_Word symbol_idx = 0; symbol_idx < symbols_size_before_conversion; ++symbol_idx) {
@@ -754,8 +718,8 @@ namespace converter::elf32 {
 
                                 // alter the former symbol: make it local and pointing to .thunkout section.
                                 symbol.st_info = ELF32_ST_INFO(STB_LOCAL, type);
+
                                 symbol.st_shndx = thunkout_text_section_idx;
-                                symbols_to_be_sized[symtab_idx].push_back(symbol_idx);
 
                                 // just get references to thunk & thunk rel sections
                                 auto& thunkout_text_section = dynamic_cast<Section32Thunkout&>(
@@ -784,17 +748,6 @@ namespace converter::elf32 {
                 auto& symtab = dynamic_cast<Section32Symtab&>(*sections[symtab_idx]);
                 for (Symbol32 const symbol: symbols) {
                     auto symbol_idx = symtab.add_symbol(symbol);
-                    symbols_to_be_sized[symtab_idx].push_back(symbol_idx);
-                }
-            }
-
-            /* New symbols size correction */
-            for (auto& [symtab_idx, symbols]: symbols_to_be_sized) {
-                auto& symtab = dynamic_cast<Section32Symtab&>(*sections[symtab_idx]);
-                for (auto const symbol_idx: symbols) {
-                    auto& symbol = symtab.symbols[symbol_idx];
-                    auto& sized_section = *sections[symbol.st_shndx];
-                    symbol.st_size = sized_section.size();
                 }
             }
         } catch (std::bad_cast const&) {

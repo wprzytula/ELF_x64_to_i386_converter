@@ -1,8 +1,5 @@
 #include "converter.h"
 #include <cstring>
-#include <cassert>
-
-#include <iostream>
 
 namespace converter::elf64 {
     Header64::Header64(std::ifstream &elf_stream) : Elf64_Ehdr{} {
@@ -50,8 +47,6 @@ namespace converter::elf64 {
         if (e_shstrndx >= e_shnum) {
             throw UnsupportedFileContent{"e_shstrndx is bigger than sections array size."};
         }
-
-        printf("Extracted Header64: e_shoff=%lu, e_shentsize=%u\n", e_shoff, e_shentsize);
     }
 
     Symbol64::Symbol64(std::ifstream &elf_stream) : Elf64_Sym{} {
@@ -65,19 +60,12 @@ namespace converter::elf64 {
     }
 
     Rela64::Rela64(std::ifstream &elf_stream) : Elf64_Rela{} {
-//            read_to_field(elf_stream, r_offset);
-//            read_to_field(elf_stream, r_info);
-//            read_to_field(elf_stream, r_addend);
         static_assert(sizeof(*this) == sizeof(Elf64_Rela));
         read_to_field(elf_stream, *this);
     }
 
     Section64::Section64(std::ifstream &elf_stream) {
         read_to_field(elf_stream, header);
-    }
-
-    [[nodiscard]] char const* Section64::name(Section64Strtab const &str_table) const {
-        return str_table.name_of(header.sh_name);
     }
 
     Section64WithGenericData::Section64WithGenericData(Section64 section64, std::ifstream& elf_stream)
@@ -95,19 +83,16 @@ namespace converter::elf64 {
 
     Section64Symtab::Section64Symtab(Section64 section64, std::ifstream& elf_stream) : Section64(std::move(section64)) {
         elf_stream.seekg(static_cast<ssize_t>(header.sh_offset));
-        std::cout << "Symbol entry size: " << sizeof(Elf64_Sym) << "\n";
         for (size_t i = 0; i < header.sh_size; i += sizeof(Elf64_Sym)) {
             symbols.emplace_back(elf_stream);
             auto const& symbol = *std::prev(std::end(symbols));
-//                printf("Symbol: name=%u, shndx=0x%x, size=%lu\n", symbol.st_name, symbol.st_shndx, symbol.st_size);
         }
     }
 
     std::unique_ptr<Section64> Section64::parse_section(std::ifstream& elf_stream, Elf64_Ehdr const& elf_header) {
         Section64 header_phase{elf_stream};
 
-        if (header_phase.header.sh_size) {
-            std::cout << "Data found in section, at " << header_phase.header.sh_offset << '\n';
+        if (header_phase.header.sh_size > 0) {
             char const* type = "other";
             switch (header_phase.header.sh_type) {
                 case SHT_NULL:
@@ -121,18 +106,15 @@ namespace converter::elf64 {
                     break;
                 case SHT_SYMTAB:
                     type = "SHT_SYMTAB";
-                    std::cout << "Section type: " << type << '\n';
                     return std::make_unique<Section64Symtab>(std::move(header_phase), elf_stream);
                 case SHT_STRTAB:
                     type = "SHT_STRTAB";
-                    std::cout << "Section type: " << type << '\n';
                     return std::make_unique<Section64Strtab>(Section64WithGenericData{std::move(header_phase), elf_stream});
                 case SHT_DYNAMIC:
                     type = "SHT_DYNAMIC";
                     break;
                 case SHT_RELA:
                     type = "SHT_RELA";
-                    std::cout << "Section type: " << type << '\n';
                     return std::make_unique<Section64Rela>(Section64Rela{std::move(header_phase), elf_stream});
                 case SHT_REL:
                     type = "SHT_REL";
@@ -140,7 +122,6 @@ namespace converter::elf64 {
                 default:
                     break;
             }
-            std::cout << "Section type: " << type << '\n';
 
             return std::make_unique<Section64WithGenericData>(Section64WithGenericData{std::move(header_phase), elf_stream});
         } else {
@@ -153,67 +134,5 @@ namespace converter::elf64 {
             elf_stream.seekg(static_cast<ssize_t>(header.e_shoff + i * header.e_shentsize));
             sections.push_back(Section64::parse_section(elf_stream, header));
         }
-
-        auto const* secstrtab = dynamic_cast<Section64Strtab*>(sections[header.e_shstrndx].get());
-        assert(secstrtab != nullptr);
-
-        // print section names
-        {
-            size_t i = 0;
-            for (std::unique_ptr<Section64> const& section: sections) {
-                std::cout << "Section "<< i++ << " " << section->name(*secstrtab) << ", entrysize=" << section->header.sh_entsize << '\n';
-            }
-        }
-
-        // find Symbol String Table
-        Section64Strtab const* symstrtab = [&](){
-            for (auto const& section: sections) {
-                auto* cast = dynamic_cast<Section64Strtab*>(section.get());
-                if (cast != nullptr && cast->header.sh_offset != sections[header.e_shstrndx]->header.sh_offset)
-                    return cast;
-            }
-            assert(false);
-        }();
-
-        // print symbol names
-        Section64Symtab* symtab;
-        for (std::unique_ptr<Section64> const& section: sections) {
-            auto* cast = dynamic_cast<Section64Symtab*>(section.get());
-            if (cast != nullptr) {
-                // found SYMTAB
-                for (auto const& symbol: cast->symbols) {
-                    size_t idx = symbol.st_shndx;
-                    std::unique_ptr<Section64> const& section = sections[idx];
-//                        section->name(*secstrtab);
-                    std::cout << "Symbol: <" << symstrtab->name_of(symbol.st_name) << ">,\t"
-                                                                                      "relevant to section no=" << symbol.st_shndx << " : " <<
-                              (symbol.special_section ? "" : section->name(*secstrtab) )
-                              << '\n';
-                }
-                symtab = cast;
-            }
-        }
-
-        // print relocations
-        std::cout << "Relocations time!\n";
-        for (std::unique_ptr<Section64> const& section: sections) {
-            auto* cast = dynamic_cast<Section64Rela*>(section.get());
-            if (cast != nullptr) {
-                // found RELA
-                std::cout << "Found RELA: " << cast->name(*secstrtab) << "\n";
-                for (auto const& relocation: cast->relocations) {
-                    auto const& symtab2 = dynamic_cast<Section64Symtab const&>(*sections[section->header.sh_link]);
-                    Symbol64 const& symbol = symtab2.symbols[ELF64_R_SYM(relocation.r_info)];
-                    std::cout << "Relocation: offset=" << relocation.r_offset <<
-                              ", SYM(info)=" << ELF64_R_SYM(relocation.r_info) <<
-                              "<" << symstrtab->name_of(symbol.st_name) << ">" <<
-                              "(section=<" << sections[cast->header.sh_info]->name(*secstrtab) <<
-                              ">, size=" << sections[cast->header.sh_info]->header.sh_size << ")" <<
-                              ", TYPE(info)=" << ELF64_R_TYPE(relocation.r_info) <<
-                              "\n";
-                }
-            }
-        }
     }
-
 }

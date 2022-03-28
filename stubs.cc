@@ -7,52 +7,6 @@
 #include <sstream>
 
 namespace converter::stubs {
-    /*std::string const thunkin = R"(
-;# long long fun(void *ptr, int x, long long y)
-
-.code32
-fun_stub:
-;# zapis rejestrów
-    pushl   %edi
-    pushl   %esi
-;# wyrównanie stosu
-    subl    $4, %esp
-;# zmiana trybu
-    ljmpl   *fun_addr_32to64
-
-;# część 64-bitowa
-.code64
-fun_stub_64:
-;# bierzemy argumenty ze stosu
-    movslq  0x10(%rsp), %rdi
-    movslq  0x14(%rsp), %rsi
-    movslq  0x18(%rsp), %rdx
-    movslq  0x1c(%rsp), %rcx
-    movslq  0x20(%rsp), %r8
-    movslq  0x24(%rsp), %r9
-;# wołamy właściwą funkcję
-    call    fun
-;# konwersja wartości zwracanej
-    movq    %rax, %rdx
-    shrq    $32, %rdx
-;# powrót
-    ljmpl   *fun_addr_64to32
-
-.code32
-fun_stub_32:
-    addl    $4, %esp
-    popl    %esi
-    popl    %edi
-    retl
-
-fun_addr_64to32:
-    .long fun_stub_32
-    .long 0x23
-
-fun_addr_32to64:
-    .long fun_stub_64
-    .long 0x33
-)";*/
     namespace {
         std::string const thunkin_template = R"(
 .section    .text
@@ -84,8 +38,8 @@ fun_stub_32:
 ;# cofnięcie wyrównania stosu
     addl    $4, %%esp
 ;# zdjęcie rejestrów
-    popl   %%edi
     popl   %%esi
+    popl   %%edi
     retl
 
 .section    .rodata
@@ -168,7 +122,6 @@ fun_addr_32to64:
         }
 
         std::string generate_thunkin(std::string const& takes) {
-//        printf("Takes:\n%s\n", takes.c_str());
             return string_format(thunkin_template, takes.c_str());
         }
 
@@ -176,26 +129,18 @@ fun_addr_32to64:
             return string_format(thunkout_template, args_size, movs.c_str(), args_size);
         }
 
-        /* *
-         * 00000000  57 56 83 ec 04 ff 2d 00  00 00 00 48 63 7c 24 10
-         * 00000010  48 63 74 24 14 48 63 54  24 18 48 63 4c 24 1c 4c
-         * 00000020  63 44 24 20 4c 63 4c 24  24 e8 00 00 00 00 48 89
-         * 00000030  c2 48 c1 ea 20 ff 2c 25  00 00 00 00 83 c4 04 5e
-         * 00000040  5f c3 00 00 00 00 23 00  00 00 00 00 00 00 33 00
-         * 00000050  00 00
-         * */
-//        unsigned char const thunkin_code[] = {
-//                /* 00 */   0x57, 0x56, 0x83, 0xec, 0x04, 0xff, 0x2d, 0x00, // 7: R_X86_64_32        .text+0x4a
-//                /* 08 */   0x00, 0x00, 0x00, 0x48, 0x63, 0x7c, 0x24, 0x10,
-//                /* 10 */   0x48, 0x63, 0x74, 0x24, 0x14, 0x48, 0x63, 0x54,
-//                /* 18 */   0x24, 0x18, 0x48, 0x63, 0x4c, 0x24, 0x1c, 0x4c,
-//                /* 20 */   0x63, 0x44, 0x24, 0x20, 0x4c, 0x63, 0x4c, 0x24,
-//                /* 28 */   0x24, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x89, // 2a: R_X86_64_PLT32    fun-0x4
-//                /* 30 */   0xc2, 0x48, 0xc1, 0xea, 0x20, 0xff, 0x2c, 0x25,
-//                /* 38 */   0x00, 0x00, 0x00, 0x00, 0x83, 0xc4, 0x04, 0x5e, // 38: R_X86_64_32S      .text+0x42
-//                /* 40 */   0x5f, 0xc3, 0x00, 0x00, 0x00, 0x00, 0x23, 0x00, // 42: R_X86_64_32       .text+0x3c
-//                /* 48 */   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x33, 0x00, // 4a: R_X86_64_32       .text+0xb
-//                /* 50 */   0x00, 0x00};
+        unsigned char const thunkin_code[] = {
+                /* 00 */   0x57, 0x56, 0x83, 0xec, 0x04, 0xff, 0x2d, 0x00, // 7: R_X86_64_32        .text+0x4a
+                /* 08 */   0x00, 0x00, 0x00, 0x48, 0x63, 0x7c, 0x24, 0x10,
+                /* 10 */   0x48, 0x63, 0x74, 0x24, 0x14, 0x48, 0x63, 0x54,
+                /* 18 */   0x24, 0x18, 0x48, 0x63, 0x4c, 0x24, 0x1c, 0x4c,
+                /* 20 */   0x63, 0x44, 0x24, 0x20, 0x4c, 0x63, 0x4c, 0x24,
+                /* 28 */   0x24, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x89, // 2a: R_X86_64_PLT32    fun-0x4
+                /* 30 */   0xc2, 0x48, 0xc1, 0xea, 0x20, 0xff, 0x2c, 0x25,
+                /* 38 */   0x00, 0x00, 0x00, 0x00, 0x83, 0xc4, 0x04, 0x5e, // 38: R_X86_64_32S      .text+0x42
+                /* 40 */   0x5f, 0xc3, 0x00, 0x00, 0x00, 0x00, 0x23, 0x00, // 42: R_X86_64_32       .text+0x3c
+                /* 48 */   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x33, 0x00, // 4a: R_X86_64_32       .text+0xb
+                /* 50 */   0x00, 0x00};
     }
 
     ThunkPreRel32::ThunkPreRel32(Elf64_Rela const& rela64) {
@@ -204,14 +149,6 @@ fun_addr_32to64:
         addend = static_cast<decltype(addend)>(rela64.r_addend);
         offset = static_cast<decltype(offset)>(rela64.r_offset);
     }
-
-    /*std::vector<ThunkPreRel32> relocations {
-            {.local_symbol=false, .offset=0x7,   .addend=0x4a},
-            {.local_symbol=true,  .offset=0x2a,  .addend=-0x4},
-            {.local_symbol=false, .offset=0x38,  .addend=0x42},
-            {.local_symbol=false, .offset=0x42,  .addend=0x3c},
-            {.local_symbol=false, .offset=0x4a,  .addend=0xb },
-    };*/
 
     Stub::Stub(std::ifstream& stub_elf) {
         Elf64_Ehdr header;
@@ -335,6 +272,12 @@ fun_addr_32to64:
 
             offset += arg.bytes_32();
         }
+
+        static const uint32_t divisor = 16;
+        static const uint32_t remainder = 8;
+        offset += remainder - offset % divisor;
+        if (offset < 0)
+            offset += divisor;
 
         return generate_thunkout(offset, movs.str());
     }

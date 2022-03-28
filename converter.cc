@@ -20,8 +20,6 @@ int main(int argc, char const* argv[]) {
 
     try {
         converter::func_spec::Functions functions{func_stream};
-        functions.print();
-        std::cout << "\n\n#############################\n\n";
 
         converter::assembly::rid_gnu_property(elf64_file_name, output_file_name);
 
@@ -38,7 +36,6 @@ int main(int argc, char const* argv[]) {
         elf_ostream.exceptions(std::ifstream::badbit);
         elf_ostream.open(output_file_name, std::ifstream::out | std::ifstream::binary);
 
-        std::cout << "\nWriting ELF32 out.\n";
         elf32.write_out(elf_ostream);
 
     } catch (std::ifstream::failure const&) {
