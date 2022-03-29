@@ -49,13 +49,3 @@ int main(int argc, char const* argv[]) {
 
     return 0;
 }
-
-int main2() {
-    std::ofstream ret{"ret.test", std::ios_base::app | std::ios_base::binary};
-    auto machine_code{converter::assembly::assemble(R"(
-mov %eax, %eax
-)")};
-    ret.write(machine_code.c_str(), static_cast<ssize_t>(machine_code.length()));
-
-    return 0;
-}

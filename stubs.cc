@@ -222,7 +222,6 @@ fun_addr_32to64:
                         : "movq";
             }
 
-//            printf("Generating take for: instr=%s, offset=%lu, reg=%s\n", instr, offset, reg);
             takes += gen_take(instr, offset, reg);
             offset += arg.bytes_32();
         }

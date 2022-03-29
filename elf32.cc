@@ -110,9 +110,9 @@ namespace converter::elf32 {
     Symbol32::Symbol32(elf64::Symbol64 const& symbol64) : Elf32_Sym{} {
         st_name = symbol64.st_name;
         st_value = symbol64.st_value;
-        st_size = symbol64.st_size; // FIXME: surely?
-        st_info = symbol64.st_info;  // TODO: to be modified elsewhere
-        st_other = symbol64.st_other; // TODO: this as well
+        st_size = symbol64.st_size;
+        st_info = symbol64.st_info;  // type and binding
+        st_other = symbol64.st_other; // visibility
         st_shndx = symbol64.st_shndx;
     }
 
@@ -172,6 +172,9 @@ namespace converter::elf32 {
 
         for (auto& rel: relocations) {
             rel.r_offset += thunk_pos;
+            if (ELF32_R_TYPE(rel.r_info) == R_386_32) {
+                *reinterpret_cast<uint32_t*>(thunk_section.data.data() + rel.r_offset) += thunk_pos;
+            }
             rel_thunk_section.relocations.push_back(rel);
         }
     }
@@ -319,7 +322,7 @@ namespace converter::elf32 {
     }
 
     Elf32_Word Section32Symtab::add_symbol(Symbol32 symbol) {
-        printf("\tAdding symbol with size=%u\n", symbol.st_size);
+//        printf("\tAdding symbol with size=%u\n", symbol.st_size);
         auto pos = symbols.size();
         symbols.push_back(symbol);
         if (ELF32_ST_BIND(symbol.st_info) == STB_LOCAL) {
@@ -700,10 +703,6 @@ namespace converter::elf32 {
                             }
                         }
                         size_t idx = symbol.st_shndx;
-                        /*std::cout << "Symbol: <" << symstrtab.name_of(symbol.st_name) << ">,\t"
-                                  "relevant to section no=" << symbol.st_shndx <<*//* " : " <<
-                                  (symbol.special_section ? "" : section->name(*secstrtab) )
-                                  <<*//* '\n';*/
                     }
                 }
             }
@@ -780,15 +779,12 @@ namespace converter::elf32 {
             // alignment check
             section->size();
             section->align_offset(offset);
-//                printf("Section %lu: aligned offset to %lu, requested %u\n", i++, offset, section->header.sh_addralign);
 
             // set section data offset
             section->set_offset(offset);
 
             // increase
-//                printf("Section %lu: before %lx, size: %lx, after %lx\n", i++, offset, section->size(), offset + section->size());
             offset += section->size();
-//                printf("Increased offset to %lu\n", offset);
         }
 
         // section headers alignment
@@ -802,19 +798,13 @@ namespace converter::elf32 {
         size_t offset = 0;
         header.write_out(elf_file, offset);
 
-        size_t i = 0;
         for (auto const& section: sections) {
-//                printf("Section %lu: ", i++);
             section->write_out_data(elf_file, offset);
-//                printf("Section %lu: before %lx, size: %lx, after %lx\n", i++, offset, section->size(), offset + section->size());
             offset += section->size();
             assert(offset == elf_file.tellp());
         }
 
-        i = 0;
-//            std::cout << "\nWriting headers:\n";
         for (auto const& section: sections) {
-//                printf("Section %lu: wrote header to %lx\n", i++, offset);
             section->write_out_header(elf_file, offset);
             assert(offset == elf_file.tellp());
         }

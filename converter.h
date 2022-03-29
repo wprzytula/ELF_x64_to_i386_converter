@@ -230,7 +230,7 @@ namespace converter {
 
             static std::unique_ptr<Section32> convert_section(elf64::Section64 const& section64, Header32 const& elf_header);
 
-            [[nodiscard]] virtual size_t size() = 0;
+            virtual size_t size() = 0;
 
             [[nodiscard]] size_t alignment() const {
                 return header.sh_addralign == 0 ? 1 : header.sh_addralign;
@@ -349,8 +349,6 @@ namespace converter {
             }
 
             size_t size() override;
-
-//            void write_out_data(std::ofstream& elf_file, size_t& offset) const override; // FIXME: remove
         };
 
         struct Section32Rel final : public Section32 {
@@ -375,10 +373,6 @@ namespace converter {
 
             size_t size() override;
         };
-
-        /*
-         * SectionWithGrowableData -> Strtab, Thunkin, Thunkout
-         * */
 
         struct Section32Thunk : public Section32WithGrowableData {
             ~Section32Thunk() override = default;

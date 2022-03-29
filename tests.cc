@@ -20,5 +20,15 @@ int main() {
 
 //    std::cout << converter::stubs::Stub::asmin(f);
 
-    std::cout << Stub::asmout(pnum);
+//    std::cout << Stub::asmout(pnum);
+
+
+    auto check = Function::from_line_decl("check void");
+    auto validate_neg = Function::from_line_decl("validate_neg void long long longlong longlong");
+    auto validate = Function::from_line_decl("validate void int long longlong uint ulong ulonglong");
+    auto validate_ptr = Function::from_line_decl("validate_ptr int ptr");
+
+//    std::cout << Stub::asmin(check);
+
+    std::cout << Stub::asmout(validate_neg);
 }
