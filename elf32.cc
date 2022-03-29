@@ -536,7 +536,7 @@ namespace converter::elf32 {
                     Rel32& rel = reltab->relocations[rel_idx];
                     auto sym = ELF32_R_SYM(rel.r_info);
 
-                    if (storage.symbols.contains(sym)) {
+                    if (storage.symbols.find(sym) != storage.symbols.end()) {
                         // store the symbol and associated relocations
                         storage.relocations.emplace_back(section_idx, rel_idx);
                     }

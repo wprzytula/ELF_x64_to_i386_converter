@@ -32,7 +32,6 @@ namespace converter {
         };
 
         struct Arg {
-            using enum ArgType;
             ArgType type;
 
             static ArgType parse_arg_type(char const* argtype);
@@ -40,7 +39,7 @@ namespace converter {
             Arg(const std::string& argtype) : type{parse_arg_type(argtype.c_str())} {} // NOLINT(google-explicit-constructor)
 
             [[nodiscard]] bool is_signed() const {
-                return type == int_t || type == long_t || type == longlong_t;
+                return type == ArgType::int_t || type == ArgType::long_t || type == ArgType::longlong_t;
             }
 
             [[nodiscard]] size_t bytes_32() const;

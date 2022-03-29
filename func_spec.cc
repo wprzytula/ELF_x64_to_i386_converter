@@ -2,24 +2,25 @@
 #include <sstream>
 #include <optional>
 #include <cstring>
+#include <iterator>
 #include "converter.h"
 
 namespace converter::func_spec {
     ArgType Arg::parse_arg_type(char const* argtype) {
-        if (strcmp(argtype, "int") == 0) return int_t;
-        if (strcmp(argtype, "uint") == 0) return uint_t;
-        if (strcmp(argtype, "long") == 0) return long_t;
-        if (strcmp(argtype, "ulong") == 0) return ulong_t;
-        if (strcmp(argtype, "longlong") == 0) return longlong_t;
-        if (strcmp(argtype, "ulonglong") == 0) return ulonglong_t;
-        if (strcmp(argtype, "ptr") == 0) return ptr_t;
+        if (strcmp(argtype, "int") == 0) return ArgType::int_t;
+        if (strcmp(argtype, "uint") == 0) return ArgType::uint_t;
+        if (strcmp(argtype, "long") == 0) return ArgType::long_t;
+        if (strcmp(argtype, "ulong") == 0) return ArgType::ulong_t;
+        if (strcmp(argtype, "longlong") == 0) return ArgType::longlong_t;
+        if (strcmp(argtype, "ulonglong") == 0) return ArgType::ulonglong_t;
+        if (strcmp(argtype, "ptr") == 0) return ArgType::ptr_t;
         throw std::invalid_argument{std::string{"invalid argument specified for function: "} + argtype + "."};
     }
 
     size_t Arg::bytes_32() const {
         switch (type) {
-            case longlong_t:
-            case ulonglong_t:
+            case ArgType::longlong_t:
+            case ArgType::ulonglong_t:
                 return 8;
             default:
                 return 4;
@@ -28,8 +29,8 @@ namespace converter::func_spec {
 
     size_t Arg::bytes_64() const {
         switch (type) {
-            case int_t:
-            case uint_t:
+            case ArgType::int_t:
+            case ArgType::uint_t:
                 return 4;
             default:
                 return 8;
