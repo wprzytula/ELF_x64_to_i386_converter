@@ -322,7 +322,6 @@ namespace converter::elf32 {
     }
 
     Elf32_Word Section32Symtab::add_symbol(Symbol32 symbol) {
-//        printf("\tAdding symbol with size=%u\n", symbol.st_size);
         auto pos = symbols.size();
         symbols.push_back(symbol);
         if (ELF32_ST_BIND(symbol.st_info) == STB_LOCAL) {
